@@ -3,6 +3,7 @@ import type { IEmbedderBatch, IEmbedResult } from '@mcp-abap-adt/llm-agent';
 import {
   beginEmbeddingRequest,
   type CallOptions,
+  EMBEDDING_CONTEXT_EXCEEDED,
   type IUsageRecorder,
   parseRetryAfter,
   RagError,
@@ -22,6 +23,25 @@ export interface OpenAiEmbedderConfig {
   baseURL?: string;
   /** Required: embedding model name (e.g. 'text-embedding-3-small'). No default — must be set explicitly. */
   model: string;
+}
+
+function embeddingErrorCode(status: number, detail: string): string {
+  if (status !== 400 && status !== 413 && status !== 422) return 'EMBED_ERROR';
+  const counts =
+    /\bmaximum context length is (\d+) tokens?\b[\s\S]*?\byou requested (\d+) tokens?\b/i.exec(
+      detail,
+    );
+  const requestCounts =
+    /\brequested (\d+) tokens?, max (\d+) tokens? per request\b/i.exec(detail);
+  const overflow =
+    /\b(?:context_length_exceeded|input (?:text )?(?:is )?too (?:long|large)|input (?:length )?exceeds (?:the )?(?:maximum )?(?:context (?:length|window)|token limit)|too many tokens)\b/i.test(
+      detail,
+    ) ||
+    /"(?:type|code)"\s*:\s*"max_tokens_per_request"/i.test(detail) ||
+    (requestCounts !== null &&
+      Number(requestCounts[1]) > Number(requestCounts[2])) ||
+    (counts && Number(counts[2]) > Number(counts[1]));
+  return overflow ? EMBEDDING_CONTEXT_EXCEEDED : 'EMBED_ERROR';
 }
 
 export class OpenAiEmbedder implements IEmbedderBatch {
@@ -100,7 +120,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
         throw Object.assign(
           new RagError(
             `OpenAI embed error: HTTP ${res.status} - ${errorText}`,
-            'EMBED_ERROR',
+            embeddingErrorCode(res.status, errorText),
           ),
           {
             status: res.status,
@@ -191,7 +211,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
         throw Object.assign(
           new RagError(
             `OpenAI batch embed error: HTTP ${res.status} - ${errorText}`,
-            'EMBED_ERROR',
+            embeddingErrorCode(res.status, errorText),
           ),
           {
             status: res.status,

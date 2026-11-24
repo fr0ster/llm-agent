@@ -3,6 +3,7 @@ import {
   beginEmbeddingRequest,
   type CallOptions,
   composeResilientEmbedder,
+  EMBEDDING_CONTEXT_EXCEEDED,
   type IUsageRecorder,
   parseRetryAfter,
   RagError,
@@ -110,10 +111,18 @@ export class OllamaEmbedder implements IEmbedderBatch {
       return '';
     });
     options?.signal?.throwIfAborted();
+    const overflow =
+      action !== 'model info' &&
+      (response.status === 400 ||
+        response.status === 413 ||
+        response.status === 422) &&
+      /\b(?:context_length_exceeded|input (?:text )?(?:is )?too (?:long|large)|input (?:length )?exceeds (?:the )?(?:maximum )?context (?:length|window)|too many tokens)\b/i.test(
+        body,
+      );
     return Object.assign(
       new RagError(
         `Ollama ${action} error: HTTP ${response.status} - ${body}`,
-        'EMBED_ERROR',
+        overflow ? EMBEDDING_CONTEXT_EXCEEDED : 'EMBED_ERROR',
       ),
       {
         status: response.status,

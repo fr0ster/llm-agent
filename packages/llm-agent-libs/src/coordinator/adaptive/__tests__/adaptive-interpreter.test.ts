@@ -12,12 +12,15 @@ import type {
   WorkStep,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  EMBEDDING_CONTEXT_EXCEEDED,
   LlmError,
   McpError,
   MODEL_CONTEXT_EXCEEDED,
+  RagError,
 } from '@mcp-abap-adt/llm-agent';
 import { DirectLlmSubAgent } from '../../../subagent/direct-llm-subagent.js';
 import {
+  AdaptiveEpicFailError,
   type AdaptiveRunInput,
   DEFAULT_BUDGET,
   runAdaptivePlan,
@@ -132,46 +135,67 @@ for (const path of ['worker', 'check', 'revise', 'report']) {
   }
 }
 
-test('an MCP tool failure goes through check and fix with an alternative worker', async () => {
-  const error = new McpError('Tool failed', 'MCP_ERROR');
-  const { input } = setup(
-    [
-      work,
-      { ...check, onFail: 'fix' },
-      { ...work, id: 'fix', worker: 'alternative' },
-      { ...answer, from: 'fix' },
-    ],
-    [error, verdict('fail', 'Worker failed')],
-  );
-  input.workers = new Map([
-    ...input.workers,
-    [
-      'alternative',
-      {
-        name: 'alternative',
-        capabilities: { contextPolicy: 'optional' },
-        async run(input) {
-          assert.match(input.task, /Worker failed/);
-          return { output: 'recovered' };
+for (const [mode, code, status] of [
+  ['throw', EMBEDDING_CONTEXT_EXCEEDED, 400],
+  ['throw', 'EMBED_ERROR', 500],
+  ['return', EMBEDDING_CONTEXT_EXCEEDED, 400],
+  ['epicfail', EMBEDDING_CONTEXT_EXCEEDED, 400],
+] as const) {
+  test(`failed work stops before check, fix, or recheck and counts usage once (${mode}, ${code})`, async () => {
+    const cause = new Error('Provider rejection');
+    const error = Object.assign(
+      new RagError('Embedding rejected the input', code),
+      { cause, status, usage: { ...usage } },
+    );
+    const returned = Object.defineProperties(
+      { output: 'Partial output', usage },
+      { status: { value: 'failed' }, error: { value: error } },
+    );
+    const epicfail = Object.assign(
+      { output: '', usage, errorClass: 'epicfail' as const },
+      { error },
+    );
+    const { input, calls, controller } = setup(
+      [
+        work,
+        { ...check, onFail: 'fix' },
+        { ...work, id: 'fix' },
+        { ...check, id: 'recheck', targets: ['fix'], onFail: 'fix' },
+        answer,
+      ],
+      [mode === 'throw' ? error : mode === 'return' ? returned : epicfail],
+    );
+    controller.report = async () => assert.fail('unexpected stop report');
+    const result = await runAdaptivePlan(input).catch((failure) => {
+      assert.equal(mode, 'epicfail');
+      assert.ok(failure instanceof AdaptiveEpicFailError);
+      assert.equal(failure.code, 'COORDINATOR_STEP_FAILED');
+      return failure.result;
+    });
+    assert.equal(result.outcome, 'stopped');
+    assert.equal(calls.length, 1);
+    assert.deepEqual(
+      result.records.map(({ stepId, status }) => [stepId, status]),
+      [['a', 'failed']],
+    );
+    if (mode !== 'epicfail') {
+      assert.partialDeepStrictEqual(
+        { ...result.error },
+        {
+          code,
+          status,
+          stepId: 'a',
         },
-      },
-    ],
-  ]);
-
-  const result = await runAdaptivePlan(input);
-  assert.equal(result.outcome, 'answered');
-  assert.equal(result.output, 'recovered');
-  assert.deepEqual(
-    result.records.map(({ stepId, kind, status }) => [stepId, kind, status]),
-    [
-      ['a', 'work', 'failed'],
-      ['c', 'check', 'done'],
-      ['fix', 'work', 'done'],
-      ['z', 'answer', 'done'],
-    ],
-  );
-  assert.equal(result.records[0]?.error, error.message);
-});
+      );
+      assert.equal(result.error?.cause, error);
+      assert.equal(error.cause, cause);
+    }
+    assert.deepEqual(result.usage, [usage]);
+    assert.deepEqual(result.workerUsage, [
+      { worker: work.worker, usage, model: undefined },
+    ]);
+  });
+}
 
 for (const mode of ['none', 'last-turn', 'all'] as const) {
   for (const withTools of [false, true]) {
@@ -406,22 +430,39 @@ test('self check uses controller.check and collects usage', async () => {
   assert.deepEqual((await runAdaptivePlan(input)).usage, [usage, usage]);
 });
 for (const worker of ['self', 'executor']) {
-  test(`${worker} check takes the failure branch on a recoverable error`, async () => {
-    const error = new McpError('Tool failed', 'MCP_ERROR');
-    const { input, controller } = setup(
-      [work, { ...check, worker, onFail: 'z', onPass: 'end' }, answer],
+  test(`${worker} check exception stops without a verdict`, async () => {
+    const error = Object.assign(new McpError('Tool failed', 'MCP_ERROR'), {
+      status: 503,
+      usage,
+    });
+    const { input, calls, controller } = setup(
+      [
+        work,
+        { ...check, worker, onFail: 'fix' },
+        { ...work, id: 'fix' },
+        answer,
+      ],
       ['draft', error],
     );
     controller.check = async () => {
       throw error;
     };
     const result = await runAdaptivePlan(input);
-    assert.equal(result.outcome, 'answered');
-    assert.equal(result.output, 'draft');
-    assert.deepEqual(result.records[1]?.verdict, {
-      verdict: 'fail',
-      reason: `${worker === 'self' ? 'controller' : 'worker'} check failed: Tool failed`,
-    });
+    assert.equal(result.outcome, 'stopped');
+    assert.partialDeepStrictEqual(
+      { ...result.error },
+      {
+        code: 'MCP_ERROR',
+        status: 503,
+        stepId: 'c',
+      },
+    );
+    assert.equal(result.error?.cause, error);
+    assert.equal(result.records.length, 2);
+    assert.equal(result.records[1]?.status, 'failed');
+    assert.equal(result.records[1]?.verdict, undefined);
+    assert.equal(calls.length, worker === 'self' ? 1 : 2);
+    assert.deepEqual(result.usage, [usage, usage]);
   });
 }
 test('failed work without later check stops', async () => {
@@ -432,21 +473,22 @@ test('failed work without later check stops', async () => {
     },
   ]);
   const result = await runAdaptivePlan(input);
-  assert.equal(result.stopReason, 'step a failed: oops');
-  assert.equal(result.output, 'report');
+  assert.equal(result.error?.code, 'COORDINATOR_STEP_FAILED');
+  assert.equal(result.stopReason, 'oops');
+  assert.equal(result.output, 'oops');
   assert.equal(result.records[0]?.status, 'failed');
   assert.equal(result.records[0]?.output, '');
   assert.equal(result.records[0]?.error, 'oops');
 });
-test('failed work with later check continues to the check', async () => {
-  const { input, calls } = setup(
-    [work, check, answer],
-    [new Error('oops'), verdict()],
-  );
+test('a returned failure without error details stops even with partial output', async () => {
+  const returned = Object.defineProperty({ output: 'partial' }, 'status', {
+    value: 'failed',
+  });
+  const { input, calls } = setup([work, check, answer], [returned]);
   const result = await runAdaptivePlan(input);
-  assert.equal(calls.length, 2);
-  assert.ok(calls[1]?.task.includes('Result of a (failed)'));
-  assert.equal(result.stopReason, 'answer source a has no result');
+  assert.equal(calls.length, 1);
+  assert.equal(result.error?.code, 'COORDINATOR_STEP_FAILED');
+  assert.equal(result.records[0]?.status, 'failed');
 });
 test('ask ends the run with the question', async () => {
   const { input, calls } = setup([

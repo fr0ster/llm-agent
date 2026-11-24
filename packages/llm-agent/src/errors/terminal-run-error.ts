@@ -1,4 +1,5 @@
 import {
+  EMBEDDING_CONTEXT_EXCEEDED,
   MODEL_CONTEXT_EXCEEDED,
   SmartAgentError,
 } from '../interfaces/types.js';
@@ -11,6 +12,7 @@ import {
 const terminalCodes = new Set([
   'ABORTED',
   'DECISION_ABORTED',
+  EMBEDDING_CONTEXT_EXCEEDED,
   'LLM_OUTPUT_TRUNCATED',
   'LLM_HTTP_ERROR',
   // The worker and check protocols require an answer or a verdict.

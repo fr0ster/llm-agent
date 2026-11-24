@@ -4,6 +4,7 @@ import {
   beginLlmRequest,
   type CallOptions,
   DefaultWaitStrategy,
+  EMBEDDING_CONTEXT_EXCEEDED,
   type IUsageRecorder,
   parseRetryAfter,
   RagError,
@@ -49,6 +50,9 @@ export interface RerankEntry {
   relevance_score: number;
 }
 
+const embeddingOverflow =
+  /\b(?:context_length_exceeded|input (?:text )?(?:is )?too (?:long|large)|too many tokens|(?:tokens|token count)[^.\n]*\bexceeds? (?:the )?(?:maximum )?(?:context (?:length|window)|(?:token )?limit))\b/i;
+
 export class VoyageHttpError extends RagError {
   readonly retryAfterSeconds: number | undefined;
 
@@ -57,9 +61,20 @@ export class VoyageHttpError extends RagError {
     response: Response,
     body: string,
   ) {
+    const embedding = endpoint === 'embeddings';
+    const overflow =
+      embedding &&
+      (response.status === 400 ||
+        response.status === 413 ||
+        response.status === 422) &&
+      embeddingOverflow.test(body);
     super(
       `Voyage AI ${endpoint} error: HTTP ${response.status} - ${body}`,
-      endpoint === 'embeddings' ? 'EMBED_ERROR' : 'RERANK_ERROR',
+      overflow
+        ? EMBEDDING_CONTEXT_EXCEEDED
+        : embedding
+          ? 'EMBED_ERROR'
+          : 'RERANK_ERROR',
     );
     this.status = response.status;
     this.headers = response.headers;

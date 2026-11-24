@@ -761,7 +761,9 @@ for (const mode of ['listed', 'mixed', 'thrown'] as const) {
         ],
       ]),
     });
-    assert.equal(await handler.execute(ctx, {}, span), true);
+    assert.equal(await handler.execute(ctx, {}, span), mode !== 'thrown');
+    if (mode === 'thrown')
+      assert.equal(ctx.error?.code, 'COORDINATOR_STEP_FAILED');
     assert.equal(logged.length, mode === 'mixed' ? 2 : 1);
     assert.equal(logged[0]?.totalTokens, 15);
     assert.equal(logged[0]?.component, 'executor');

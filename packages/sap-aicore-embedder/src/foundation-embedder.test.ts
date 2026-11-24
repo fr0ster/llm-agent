@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
 import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
-import { isBatchSizeLimited } from '@mcp-abap-adt/llm-agent';
+import {
+  EMBEDDING_CONTEXT_EXCEEDED,
+  httpStatusOf,
+  isBatchSizeLimited,
+  terminalRunError,
+} from '@mcp-abap-adt/llm-agent';
 import { FoundationModelsEmbedder } from './foundation-embedder.js';
 
 const originalFetch = globalThis.fetch;
@@ -73,6 +78,82 @@ function makeGeminiEmbedder() {
     credential: fixedCredential(),
     apiBaseUrl: 'https://api.example.com',
   });
+}
+
+for (const [model, makeEmbedder] of [
+  ['text-embedding-3-small', makeOpenAiEmbedder],
+  ['gemini-embedding', makeGeminiEmbedder],
+] as const) {
+  for (const [status, message, code, providerCode, providerType] of [
+    [400, 'context length must be a positive integer', 'RAG_ERROR'],
+    [401, 'Unauthorized', 'RAG_ERROR'],
+    [429, 'Rate limited', 'RAG_ERROR'],
+    [500, 'Service failure', 'RAG_ERROR'],
+    [
+      400,
+      'Input exceeds the maximum context length',
+      EMBEDDING_CONTEXT_EXCEEDED,
+    ],
+    [
+      400,
+      'Requested 300500 tokens, max 300000 tokens per request',
+      EMBEDDING_CONTEXT_EXCEEDED,
+      'max_tokens_per_request',
+      'max_tokens_per_request',
+    ],
+    [
+      400,
+      'Request rejected',
+      EMBEDDING_CONTEXT_EXCEEDED,
+      undefined,
+      'max_tokens_per_request',
+    ],
+    [
+      400,
+      'Requested 300001 tokens, max 300000 tokens per request',
+      EMBEDDING_CONTEXT_EXCEEDED,
+    ],
+    [
+      400,
+      'Requested 300000 tokens, max 300000 tokens per request',
+      'RAG_ERROR',
+    ],
+  ] as const) {
+    test(`foundation ${model} preserves HTTP ${status} details for ${message}`, async () => {
+      const body = {
+        error: { message, type: providerType, code: providerCode },
+      };
+      installFetch((url) =>
+        url.includes('/v2/lm/deployments')
+          ? { body: deploymentList(model) }
+          : { body, status },
+      );
+      const embedder = makeEmbedder();
+      for (const run of [
+        () => embedder.embedBatch(['hello', 'world']),
+        () => embedder.embed('hello'),
+      ]) {
+        await assert.rejects(run, (error) => {
+          assert.ok(error instanceof Error);
+          assert.equal(error.cause, undefined);
+          assert.equal(
+            httpStatusOf(error),
+            code === EMBEDDING_CONTEXT_EXCEEDED ? status : undefined,
+          );
+          assert.partialDeepStrictEqual(
+            { ...error, message: error.message },
+            {
+              code,
+              message: `SAP AI Core embeddings call failed: ${status}  ${JSON.stringify(body)}`,
+            },
+          );
+          if (code === EMBEDDING_CONTEXT_EXCEEDED)
+            assert.equal(terminalRunError(error), error);
+          return true;
+        });
+      }
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------

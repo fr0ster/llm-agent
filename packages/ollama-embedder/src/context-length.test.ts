@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import {
+  EMBEDDING_CONTEXT_EXCEEDED,
+  terminalRunError,
+} from '@mcp-abap-adt/llm-agent';
 import { OllamaEmbedder, OllamaRag } from './ollama.js';
 
 test('uses the cached model context for each request and disables truncation', async (t) => {
@@ -49,10 +53,11 @@ test('uses the cached model context for each request and disables truncation', a
   await embedder.embed('test');
   await embedder.embedBatch(['one', 'two']);
   const oversized = 'x'.repeat(8191);
-  await assert.rejects(
-    embedder.embed(oversized),
-    /input length exceeds the context length/,
-  );
+  await assert.rejects(embedder.embed(oversized), (error) => {
+    assert.match(String(error), /input length exceeds the context length/);
+    assert.equal(terminalRunError(error)?.code, EMBEDDING_CONTEXT_EXCEEDED);
+    return true;
+  });
   assert.equal(shows, 1);
   assert.deepEqual(
     payloads.map((body) => body.input),
@@ -76,6 +81,41 @@ test('uses the cached model context for each request and disables truncation', a
   assert.equal(stored.value?.text, artifact);
   assert.equal(shows, 2);
 });
+
+for (const [status, message] of [
+  [400, 'context length must be a positive integer'],
+  [401, 'Unauthorized'],
+  [429, 'Rate limited'],
+  [500, 'Service failure'],
+] as const) {
+  test(`Ollama preserves EMBED_ERROR for HTTP ${status}`, async (t) => {
+    const body = JSON.stringify({ error: message });
+    t.mock.method(globalThis, 'fetch', async (url: URL | Request | string) =>
+      String(url).endsWith('/api/show')
+        ? Response.json({})
+        : new Response(body, { status }),
+    );
+    const embedder = new OllamaEmbedder({ model: 'bge-m3' });
+    for (const [action, run] of [
+      ['embed', () => embedder.embed('hello')],
+      ['batch embed', () => embedder.embedBatch(['hello', 'world'])],
+    ] as const) {
+      await assert.rejects(run, (error) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.cause, undefined);
+        assert.partialDeepStrictEqual(
+          { ...error, message: error.message },
+          {
+            code: 'EMBED_ERROR',
+            message: `Ollama ${action} error: HTTP ${status} - ${body}`,
+            status,
+          },
+        );
+        return true;
+      });
+    }
+  });
+}
 
 test('the character capacity leaves room for byte fallback and special tokens on Unicode fragments', async (t) => {
   const context = 34;

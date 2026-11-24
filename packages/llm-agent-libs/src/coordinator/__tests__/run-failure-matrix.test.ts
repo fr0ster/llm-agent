@@ -91,14 +91,13 @@ async function adaptive(llm: ILlm) {
     controller: new LlmAdaptiveController(llm),
     budget: DEFAULT_BUDGET,
   });
-  if (result.error) throw result.error;
   assert.equal(result.outcome, 'stopped');
-  assert.equal(result.stopReason, 'step work failed: Request failed');
-  assert.equal(result.output, done.content);
   assert.deepEqual(
-    result.records.map(({ status }) => status),
-    ['failed'],
+    result.records.map(({ stepId, status }) => [stepId, status]),
+    [[node.id, 'failed']],
   );
+  assert.ok(result.error);
+  throw result.error;
 }
 
 async function stepper(llm: ILlm) {
@@ -244,7 +243,12 @@ for (const [kind, run] of Object.entries({
   for (const failure of kind === 'dispatch'
     ? [...failures, httpFailure(404, true), httpFailure(422, true)]
     : failures) {
-    test(`${kind} ${failure.terminalCode ? 'stops on' : 'recovers from'} ${failure.name}`, async () => {
+    const stopCode =
+      failure.terminalCode ??
+      (kind === 'adaptive' && !failure.response.ok
+        ? failure.response.error.code
+        : undefined);
+    test(`${kind} ${stopCode ? 'stops on' : 'recovers from'} ${failure.name}`, async () => {
       let calls = 0;
       const respond: ILlm['chat'] = async () =>
         ++calls === 1 ? failure.response : { ok: true, value: done };
@@ -254,10 +258,10 @@ for (const [kind, run] of Object.entries({
           yield await respond(...args);
         },
       };
-      if (failure.terminalCode) {
+      if (stopCode) {
         await assert.rejects(run(llm, failure), (error) => {
           assert.ok(error instanceof SmartAgentError);
-          assert.equal(error.code, failure.terminalCode);
+          assert.equal(error.code, stopCode);
           assert.equal(httpStatusOf(error), failure.status);
           return true;
         });

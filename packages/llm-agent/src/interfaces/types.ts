@@ -182,6 +182,7 @@ export class SmartAgentError extends Error {
 }
 
 export const MODEL_CONTEXT_EXCEEDED = 'MODEL_CONTEXT_EXCEEDED';
+export const EMBEDDING_CONTEXT_EXCEEDED = 'EMBEDDING_CONTEXT_EXCEEDED';
 
 export class LlmError extends SmartAgentError {
   constructor(message: string, code = 'LLM_ERROR') {

@@ -5,13 +5,16 @@ import { test } from 'node:test';
 import {
   asymmetricEmbedder,
   CircuitBreaker,
+  EMBEDDING_CONTEXT_EXCEEDED,
   type IUsageRecorder,
   RagError,
   type RagResult,
+  terminalRunError,
   type UsageInput,
   withCircuitBreaker,
 } from '@mcp-abap-adt/llm-agent';
 import { VoyageEmbedder, VoyageReranker } from './index.js';
+import { VoyageHttpError } from './voyage-client.js';
 
 const credential = { kind: 'api-key' as const, secret: async () => 'fixture' };
 const embeddingConfig = { credential, model: 'voyage-4-large' };
@@ -214,7 +217,7 @@ test('embedding sends an input above the UTF-8 estimate budget by itself', async
   );
 });
 
-test('subdivides server-reported aggregate token violations and preserves a context-length error', async (t) => {
+test('aggregate and per-input overflows are terminal on the first request', async (t) => {
   const batches: string[][] = [];
   t.mock.method(
     globalThis,
@@ -244,22 +247,67 @@ test('subdivides server-reported aggregate token violations and preserves a cont
     ...embeddingConfig,
     model: 'model-with-unlisted-token-limit',
   });
-  const result = await embedder.embedBatch(['a', 'aa', 'aaa']);
-  assert.deepEqual(
-    result.map((item) => item.vector),
-    [[1], [2], [3]],
-  );
-  await assert.rejects(embedder.embedBatch(['long', 'a']), {
-    code: 'EMBED_ERROR',
-    status: 400,
-  });
+  for (const texts of [
+    ['a', 'aa', 'aaa'],
+    ['long', 'a'],
+  ]) {
+    await assert.rejects(embedder.embedBatch(texts), (error) => {
+      assert.ok(error instanceof Error);
+      assert.partialDeepStrictEqual(
+        { ...error },
+        {
+          code: EMBEDDING_CONTEXT_EXCEEDED,
+          status: 400,
+        },
+      );
+      assert.equal(terminalRunError(error), error);
+      return true;
+    });
+  }
   assert.deepEqual(batches, [
     ['a', 'aa', 'aaa'],
-    ['a', 'aa'],
-    ['aaa'],
     ['long', 'a'],
   ]);
 });
+
+for (const [status, message] of [
+  [400, 'context length must be a positive integer'],
+  [401, 'Invalid API key'],
+  [429, 'Rate limited'],
+  [500, 'Service failure'],
+] as const) {
+  test(`Voyage preserves EMBED_ERROR for HTTP ${status}`, async (t) => {
+    const body = JSON.stringify({ detail: message });
+    const expected = {
+      code: 'EMBED_ERROR',
+      message: `Voyage AI embeddings error: HTTP ${status} - ${body}`,
+      status,
+    };
+    const verify = (error: Error) => {
+      assert.equal(error.cause, undefined);
+      assert.partialDeepStrictEqual(
+        { ...error, message: error.message },
+        expected,
+      );
+      return true;
+    };
+    if (status === 429) {
+      // The client retries 429 until the caller aborts or a different response arrives.
+      verify(
+        new VoyageHttpError('embeddings', new Response(body, { status }), body),
+      );
+      return;
+    }
+    t.mock.method(
+      globalThis,
+      'fetch',
+      async () => new Response(body, { status }),
+    );
+    const embedder = new VoyageEmbedder(embeddingConfig);
+    await assert.rejects(embedder.embed('hello'), verify);
+    await assert.rejects(embedder.embedBatch(['hello', 'world']), verify);
+  });
+}
 
 test('429 honors Retry-After through repeated refusals without tripping the circuit breaker', async (t) => {
   const records: UsageInput[] = [];

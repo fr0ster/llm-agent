@@ -5,6 +5,7 @@ import type {
   IAdaptiveController,
   ISubAgent,
   ISubAgentInput,
+  ISubAgentResult,
   LlmToolCall,
   LlmUsage,
   Message,
@@ -16,9 +17,12 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   contextExceededError,
+  EMBEDDING_CONTEXT_EXCEEDED,
+  httpStatusOf,
   terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
+import { errorUsage } from '../../logger/llm-call-usage.js';
 import { composeStepInput } from './compose-step-input.js';
 import { parseVerdict, validateSteps } from './parse-plan.js';
 
@@ -139,6 +143,7 @@ export async function runAdaptivePlan(
       output = report.text;
     } catch (error) {
       const overflow = contextExceededError(error);
+      collect(errorUsage(error).usage);
       if (overflow) return failedRun(overflow);
       input.signal?.throwIfAborted();
       const terminal = terminalRunError(error);
@@ -197,7 +202,43 @@ export async function runAdaptivePlan(
     };
 
     if (step.kind === 'work' || step.kind === 'check') {
-      let terminalError: SmartAgentError | undefined;
+      const failureCode =
+        step.kind === 'check'
+          ? 'COORDINATOR_CHECK_FAILED'
+          : 'COORDINATOR_STEP_FAILED';
+      const failStep = <T>(error: T): AdaptiveRunResult => {
+        const overflow = contextExceededError(error);
+        if (!overflow) input.signal?.throwIfAborted();
+        const terminal = overflow ?? terminalRunError(error);
+        const details =
+          typeof error === 'object' && error !== null ? error : undefined;
+        const code =
+          terminal?.code === EMBEDDING_CONTEXT_EXCEEDED
+            ? terminal.code
+            : details && 'code' in details && typeof details.code === 'string'
+              ? details.code
+              : (terminal?.code ?? failureCode);
+        const status = httpStatusOf(details);
+        const failure =
+          overflow ??
+          (terminal?.code === 'ABORTED' ||
+          terminal?.code === 'CREDENTIALS_REJECTED'
+            ? terminal
+            : Object.assign(
+                new OrchestratorError(
+                  terminal?.message ?? message(error),
+                  code,
+                ),
+                { cause: error, stepId: step.id },
+                status === undefined ? {} : { status },
+              ));
+        record.status = 'failed';
+        record.output = '';
+        record.error = message(error);
+        delete record.verdict;
+        finish();
+        return failedRun(failure);
+      };
       // The composer uses map insertion order: retain current plan order even after jumps.
       const orderedLatest = new Map(
         plan.steps.flatMap((candidate) => {
@@ -230,19 +271,8 @@ export async function runAdaptivePlan(
           record.verdict = checked.verdict;
           record.output = JSON.stringify(checked.verdict);
         } catch (error) {
-          const overflow = contextExceededError(error);
-          if (!overflow) input.signal?.throwIfAborted();
-          collect((error as { usage?: LlmUsage } | null)?.usage);
-          terminalError = overflow ?? terminalRunError(error);
-          if (terminalError) {
-            record.status = 'failed';
-            record.error = message(error);
-          } else {
-            record.verdict = {
-              verdict: 'fail',
-              reason: `controller check failed: ${message(error)}`,
-            };
-          }
+          collect(errorUsage(error).usage);
+          return failStep(error);
         }
       } else {
         const source = plan.steps.find(
@@ -261,10 +291,11 @@ export async function runAdaptivePlan(
                   );
               }
             : undefined;
+        const worker = input.workers.get(step.worker);
+        let worked: ISubAgentResult;
         try {
-          const worker = input.workers.get(step.worker);
           if (!worker) throw new Error(`unknown worker ${step.worker}`);
-          const worked = await worker.run({
+          worked = await worker.run({
             caller: input.caller,
             ...composeStepInput({
               request: input.request,
@@ -283,54 +314,10 @@ export async function runAdaptivePlan(
             externalResults: input.externalResults,
             onPartial,
           });
-          collect(worked.usage);
-          if (worked.usage)
-            workerUsage.push({
-              worker: step.worker,
-              usage: worked.usage,
-              model:
-                worked.model ??
-                (typeof worked.metadata?.model === 'string'
-                  ? worked.metadata.model
-                  : worker.model),
-            });
-          if (worked.errorClass === 'epicfail') {
-            record.status = 'failed';
-            record.error = 'epicfail';
-            finish();
-            throw new AdaptiveEpicFailError(
-              {
-                ...result('stopped', ''),
-                stopReason: `step ${step.id} epicfail`,
-              },
-              worked.epicFailTrace,
-            );
-          }
-          record.output = worked.output;
-          if (worked.status === 'awaiting-external') {
-            finish();
-            return {
-              ...result('awaiting-external', worked.output),
-              pendingExternalToolCalls: worked.pendingExternalToolCalls,
-            };
-          }
-          if (step.kind === 'check') {
-            record.verdict = parseVerdict(worked.output);
-            if (!record.verdict)
-              throw new OrchestratorError(
-                `Check ${step.id} failed to retrieve a verdict: unparsable verdict`,
-                'VERDICT_RETRIEVAL_FAILED',
-              );
-          } else if (!worked.output.trim()) {
-            throw new OrchestratorError(
-              'Worker returned an empty terminal response.',
-              'EMPTY_WORKER_OUTPUT',
-            );
-          }
         } catch (error) {
           if (error instanceof AdaptiveEpicFailError) throw error;
-          const failed = error as { usage?: LlmUsage; model?: string } | null;
-          if (failed?.usage) {
+          const failed = errorUsage(error);
+          if (failed.usage) {
             collect(failed.usage);
             workerUsage.push({
               worker: step.worker,
@@ -338,41 +325,76 @@ export async function runAdaptivePlan(
               model: failed.model,
             });
           }
-          const overflow = contextExceededError(error);
-          if (!overflow) input.signal?.throwIfAborted();
+          return failStep(error);
+        }
+        // Some workers report a failed status at runtime despite the public result type.
+        const failed = Object.is(worked.status, 'failed');
+        const epicfail = worked.errorClass === 'epicfail';
+        const failure =
+          (failed || epicfail) && 'error' in worked ? worked.error : undefined;
+        const attribution = errorUsage(failure);
+        const reportedUsage = worked.usage ?? attribution.usage;
+        if (reportedUsage) {
+          collect(reportedUsage);
+          workerUsage.push({
+            worker: step.worker,
+            usage: reportedUsage,
+            model:
+              worked.model ??
+              (typeof worked.metadata?.model === 'string'
+                ? worked.metadata.model
+                : (attribution.model ?? worker.model)),
+          });
+        }
+        if (epicfail) {
           record.status = 'failed';
-          record.output = '';
-          record.error = message(error);
-          terminalError = overflow ?? terminalRunError(error);
-          if (step.kind === 'check' && !terminalError)
-            record.verdict = {
-              verdict: 'fail',
-              reason: `worker check failed: ${record.error}`,
-            };
+          record.error = 'epicfail';
+          finish();
+          throw new AdaptiveEpicFailError(
+            {
+              ...result('stopped', ''),
+              stopReason: `step ${step.id} epicfail`,
+            },
+            worked.epicFailTrace,
+          );
+        }
+        if (failed) {
+          return failStep(
+            failure ??
+              new OrchestratorError(
+                worked.output || `Step ${step.id} failed`,
+                failureCode,
+              ),
+          );
+        }
+        record.output = worked.output;
+        if (worked.status === 'awaiting-external') {
+          finish();
+          return {
+            ...result('awaiting-external', worked.output),
+            pendingExternalToolCalls: worked.pendingExternalToolCalls,
+          };
+        }
+        if (step.kind === 'check') {
+          record.verdict = parseVerdict(worked.output);
+        } else if (!worked.output.trim()) {
+          return failStep(
+            new OrchestratorError(
+              'Worker returned an empty terminal response.',
+              'EMPTY_WORKER_OUTPUT',
+            ),
+          );
         }
       }
-      finish();
-      if (terminalError) return failedRun(terminalError);
       if (step.kind === 'check' && !record.verdict) {
-        return failedRun(
+        return failStep(
           new OrchestratorError(
-            `Check ${step.id} failed to retrieve a verdict: ${record.error}`,
+            `Check ${step.id} failed to retrieve a verdict: unparsable verdict`,
             'VERDICT_RETRIEVAL_FAILED',
           ),
         );
       }
-      if (
-        step.kind === 'work' &&
-        record.status === 'failed' &&
-        !plan.steps
-          .slice(cursor + 1)
-          .some(
-            (candidate) =>
-              candidate.kind === 'check' && candidate.targets.includes(step.id),
-          )
-      ) {
-        return stop(`step ${step.id} failed: ${record.error}`);
-      }
+      finish();
       if (step.kind === 'check' && record.verdict) {
         const verdict = record.verdict;
         const branch =
@@ -426,7 +448,7 @@ export async function runAdaptivePlan(
         const overflow = contextExceededError(error);
         if (!overflow) input.signal?.throwIfAborted();
         record.status = 'failed';
-        collect((error as { usage?: LlmUsage } | null)?.usage);
+        collect(errorUsage(error).usage);
         record.error = message(error);
         finish();
         const terminal = overflow ?? terminalRunError(error);

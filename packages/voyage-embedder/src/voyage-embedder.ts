@@ -1,6 +1,7 @@
 import { Buffer } from 'node:buffer';
 import {
   type CallOptions,
+  EMBEDDING_CONTEXT_EXCEEDED,
   type IEmbedderBatch,
   type IEmbedResult,
   RagError,
@@ -157,6 +158,7 @@ export class VoyageEmbedder implements IEmbedderBatch {
       if (
         texts.length < 2 ||
         !(error instanceof VoyageHttpError) ||
+        error.code === EMBEDDING_CONTEXT_EXCEEDED ||
         error.status !== 400 ||
         !/\btotal\b[^.\n]{0,100}\btokens?\b|\btokens?\b[^.\n]{0,100}\btotal\b/i.test(
           error.message,

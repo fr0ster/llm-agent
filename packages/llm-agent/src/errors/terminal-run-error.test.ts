@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  EMBEDDING_CONTEXT_EXCEEDED,
   MODEL_CONTEXT_EXCEEDED,
   SmartAgentError,
 } from '../interfaces/types.js';
@@ -29,6 +30,20 @@ test('overflow wins through a deeper cause chain and another terminal wrapper', 
   );
   assert.equal(contextExceededError(wrapped), overflow);
   assert.equal(terminalRunError(wrapped), overflow);
+});
+
+test('embedding context overflow is terminal without HTTP metadata', () => {
+  const embedding = new SmartAgentError(
+    'Input exceeds context',
+    EMBEDDING_CONTEXT_EXCEEDED,
+  );
+  const wrapped = new Error('Embedding failed', { cause: embedding });
+  assert.equal(terminalRunError(wrapped), embedding);
+  assert.equal(contextExceededError(wrapped), undefined);
+  assert.equal(
+    terminalRunError(new Error('Prompt overflow', { cause: overflow })),
+    overflow,
+  );
 });
 
 test('context overflow detection terminates on a cycle and leaves other terminal codes alone', () => {
