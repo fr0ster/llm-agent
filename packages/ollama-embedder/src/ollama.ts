@@ -5,6 +5,7 @@ import {
   composeResilientEmbedder,
   embeddingErrorCode,
   embeddingOverflowError,
+  findAbort,
   type IUsageRecorder,
   parseRetryAfter,
   RagError,
@@ -108,7 +109,7 @@ export class OllamaEmbedder implements IEmbedderBatch {
   ): Promise<RagError> {
     const body = await response.text().catch((error) => {
       options?.signal?.throwIfAborted();
-      if (error instanceof Error && error.name === 'AbortError') throw error;
+      if (findAbort(error)) throw error;
       return '';
     });
     options?.signal?.throwIfAborted();
@@ -208,19 +209,12 @@ export class OllamaEmbedder implements IEmbedderBatch {
       });
       return result;
     } catch (err) {
+      const aborted = options?.signal?.aborted || findAbort(err);
       request.end({
-        outcome:
-          options?.signal?.aborted ||
-          (err instanceof Error && err.name === 'AbortError')
-            ? 'aborted'
-            : 'error',
+        outcome: aborted ? 'aborted' : 'error',
         error: err,
       });
-      if (
-        options?.signal?.aborted ||
-        (err instanceof Error && err.name === 'AbortError')
-      )
-        throw err;
+      if (aborted) throw err;
       throw embeddingOverflowError(err) ?? err;
     }
   }

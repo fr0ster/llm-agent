@@ -123,15 +123,14 @@ export class PipelineExecutor {
         phase: stage.id,
         duration: Date.now() - stageStart,
       });
-      if (!ok) {
-        if (signal?.aborted) {
-          ctx.error = runInterruption(signal, [ctx.error]);
-        } else {
-          ctx.error ??= new OrchestratorError(
+      if (!ok || ctx.error) {
+        ctx.error =
+          runInterruption(signal, [ctx.error]) ??
+          ctx.error ??
+          new OrchestratorError(
             `Pipeline stage "${stage.id}" failed.`,
             'PIPELINE_STAGE_FAILED',
           );
-        }
       }
       span.setStatus(ctx.error ? 'error' : 'ok');
       span.end();

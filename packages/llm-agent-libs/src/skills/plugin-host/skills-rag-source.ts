@@ -6,7 +6,9 @@ import type {
   RagResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { contextExceededError, RagError } from '@mcp-abap-adt/llm-agent';
+import { copyErrorUsage, RagError } from '@mcp-abap-adt/llm-agent';
+
+import { runInterruption } from '../../utils/with-abort.js';
 
 export interface SkillsRagSourceConfig {
   group: string;
@@ -54,8 +56,11 @@ export function skillsRagSource(
         return {
           ok: false,
           error:
-            contextExceededError(e) ??
-            new RagError(`skills source error: ${String(e)}`),
+            runInterruption(options?.signal, [e]) ??
+            copyErrorUsage(
+              new RagError(`skills source error: ${String(e)}`, 'RAG_ERROR'),
+              e,
+            ),
         };
       }
     },
@@ -67,7 +72,9 @@ export function skillsRagSource(
       } catch (e) {
         return {
           ok: false,
-          error: contextExceededError(e) ?? new RagError(String(e)),
+          error:
+            runInterruption(options?.signal, [e]) ??
+            copyErrorUsage(new RagError(String(e), 'RAG_ERROR'), e),
         };
       }
     },

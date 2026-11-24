@@ -3,11 +3,11 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { RagCaller } from '@mcp-abap-adt/llm-agent';
 import {
   buildExternalResults,
-  contextExceededError,
   type IModelProvider,
   type IRequestLogger,
   type Message,
   normalizeAndValidateExternalTools,
+  overflowError,
   type StreamToolCall,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
@@ -322,7 +322,7 @@ export async function handleChat(
         if (!canWrite(res, abort.signal)) break;
         keepAlive.reset();
         if (!chunk.ok) {
-          const terminal = contextExceededError(chunk.error);
+          const terminal = overflowError(chunk.error);
           if (terminal) {
             res.end(
               `data: ${jsonError(terminal.message, 'invalid_request_error', terminal.code)}\n\n`,
@@ -492,7 +492,7 @@ export async function handleChat(
   }
   log({ event: 'request_done', ok: result.ok, durationMs: Date.now() - t0 });
   if (!result.ok) {
-    const terminal = contextExceededError(result.error);
+    const terminal = overflowError(result.error);
     if (terminal) {
       res.writeHead(400, {
         'Content-Type': 'application/json',

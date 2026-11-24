@@ -5,7 +5,7 @@ import type {
   Message,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  contextExceededError,
+  overflowError,
   recordToolInvocation,
   scopedUsage,
 } from '@mcp-abap-adt/llm-agent';
@@ -107,7 +107,7 @@ export function fireInternalToolsAsync(
           }),
         );
         if (!res.ok) {
-          const terminal = contextExceededError(res.error);
+          const terminal = overflowError(res.error, ctx.options?.signal);
           if (terminal) throw terminal;
         }
         const text = !res.ok
@@ -128,7 +128,7 @@ export function fireInternalToolsAsync(
         );
         return { toolCallId: tc.id, toolName: tc.name, text };
       } catch (err) {
-        const terminal = contextExceededError(err);
+        const terminal = overflowError(err, ctx.options?.signal);
         if (terminal) throw terminal;
         return {
           toolCallId: tc.id,

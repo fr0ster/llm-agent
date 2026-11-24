@@ -4,6 +4,7 @@ import { setImmediate } from 'node:timers/promises';
 import {
   buildRagCollectionToolEntries,
   DirectEditStrategy,
+  EMBEDDING_CONTEXT_EXCEEDED,
   GlobalUniqueIdStrategy,
   type ICoordinatorContext,
   type ILlm,
@@ -15,8 +16,10 @@ import {
   MODEL_CONTEXT_EXCEEDED,
   RagError,
   SimpleRagRegistry,
+  symmetricEmbedder,
   TokenLedger,
   type ToolRound,
+  VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import {
   MCPClientWrapper,
@@ -40,8 +43,8 @@ import {
 const tool = { name: 'Work', description: 'Work', inputSchema: {} };
 
 for (const pipeline of [false, true]) {
-  for (const scenario of ['terminal', 'mixed', 'ordinary']) {
-    test(`${pipeline ? 'pipeline' : 'direct'} handles ${scenario} rag_add failures through embedded MCP`, async () => {
+  for (const scenario of ['terminal', 'embedding', 'mixed', 'ordinary']) {
+    test(`${pipeline ? 'pipeline' : 'direct'} handles ${scenario} rag_add failures through embedded MCP`, async (t) => {
       const externalTools = scenario === 'mixed' ? [tool] : [];
       const options = { ...testCallOptions(), externalTools };
       const failure = new LlmError(
@@ -55,9 +58,25 @@ for (const pipeline of [false, true]) {
         },
         async *streamChat() {},
       };
-      const rag = new InMemoryRag({
-        documentEnrichers: [new IntentEnricher(enricher)],
-      });
+      const embeddingOverflow = new RagError(
+        'Embedding input is too long',
+        EMBEDDING_CONTEXT_EXCEEDED,
+        { status: 400 },
+      );
+      let embeddingCalls = 0;
+      const rag =
+        scenario === 'embedding'
+          ? new VectorRag(
+              symmetricEmbedder({
+                async embed() {
+                  embeddingCalls++;
+                  throw embeddingOverflow;
+                },
+              }),
+            )
+          : new InMemoryRag({
+              documentEnrichers: [new IntentEnricher(enricher)],
+            });
       const writer = rag.writer();
       const registry = new SimpleRagRegistry();
       registry.register(
@@ -96,6 +115,7 @@ for (const pipeline of [false, true]) {
         },
       });
       await wrapper.connect();
+      t.after(() => wrapper.disconnect());
       const { deps, llm } = makeDefaultDeps({
         assembler: new ContextAssembler(),
         mcpClients: [new McpClientAdapter(wrapper)],
@@ -149,9 +169,11 @@ for (const pipeline of [false, true]) {
         );
       } else {
         assert.ok(!result.ok);
-        assert.equal(result.error.code, MODEL_CONTEXT_EXCEEDED);
-        assert.equal(result.error.cause, failure);
+        const expected = scenario === 'embedding' ? embeddingOverflow : failure;
+        assert.equal(result.error.code, expected.code);
+        assert.equal(result.error.cause, expected);
         assert.equal(llm.callCount, 1);
+        assert.equal(embeddingCalls, scenario === 'embedding' ? 1 : 0);
       }
     });
   }

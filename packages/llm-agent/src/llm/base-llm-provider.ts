@@ -1,3 +1,4 @@
+import { findAbort } from '../errors/abort-run-error.js';
 /**
  * Base interface for LLM providers
  */
@@ -393,11 +394,7 @@ export abstract class BaseLLMProvider<
 function requestAborted(error: unknown, signal?: AbortSignal): boolean {
   if (signal?.aborted) return true;
   try {
-    return (
-      error instanceof Error &&
-      (error.name === 'AbortError' ||
-        ('code' in error && error.code === 'ERR_CANCELED'))
-    );
+    return findAbort(error) !== undefined;
   } catch {
     return false;
   }
@@ -416,16 +413,7 @@ function fingerprint(secret: string | undefined): string {
 }
 
 function isTransientFailure(error: object | undefined): boolean {
-  if (isAuthenticationFailure(error)) return false;
-  for (const current of errorCauseChain(error)) {
-    if (
-      ('name' in current &&
-        ['AbortError', 'CanceledError'].includes(String(current.name))) ||
-      ('code' in current &&
-        ['ERR_CANCELED', 'ABORT_ERR'].includes(String(current.code)))
-    )
-      return false;
-  }
+  if (findAbort(error) || isAuthenticationFailure(error)) return false;
   const status = httpStatusOf(error);
   if (status !== undefined) return [500, 502, 503, 504].includes(status);
   for (const current of errorCauseChain(error)) {

@@ -14,7 +14,11 @@ import type {
   StepRecord,
   StepStatus,
 } from '@mcp-abap-adt/llm-agent';
-import { httpStatusOf, toRunError } from '@mcp-abap-adt/llm-agent';
+import {
+  copyErrorUsage,
+  httpStatusOf,
+  toRunError,
+} from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import { errorUsage } from '../../logger/llm-call-usage.js';
 import { runInterruption } from '../../utils/with-abort.js';
@@ -76,7 +80,7 @@ export class AdaptiveEpicFailError extends OrchestratorError {
         status: failure?.status ?? error?.status,
       },
     );
-    Object.assign(this, errorUsage(failure), errorUsage(error));
+    Object.assign(this, copyErrorUsage({}, error, failure));
   }
 }
 
@@ -208,18 +212,20 @@ export async function runAdaptivePlan(
       record.error = failure.message;
       finish();
       return failedRun(
-        Object.assign(
-          new OrchestratorError(failure.message, failure.code, {
-            cause: failure.code === 'ABORTED' ? failure : error,
-            status:
-              httpStatusOf(failure) ??
-              (typeof error === 'object' && error !== null
-                ? httpStatusOf(error)
-                : undefined),
-          }),
-          errorUsage(failure),
-          errorUsage(error),
-          { stepId: step.id },
+        copyErrorUsage(
+          Object.assign(
+            new OrchestratorError(failure.message, failure.code, {
+              cause: failure.code === 'ABORTED' ? failure : error,
+              status:
+                httpStatusOf(failure) ??
+                (typeof error === 'object' && error !== null
+                  ? httpStatusOf(error)
+                  : undefined),
+            }),
+            { stepId: step.id },
+          ),
+          error,
+          failure,
         ),
       );
     };

@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 import {
   type CallOptions,
   embeddingOverflowError,
+  findAbort,
   type IEmbedderBatch,
   type IEmbedResult,
   RagError,
@@ -152,11 +153,7 @@ export class VoyageEmbedder implements IEmbedderBatch {
         };
       });
     } catch (error) {
-      if (
-        options?.signal?.aborted ||
-        (error instanceof Error && error.name === 'AbortError')
-      )
-        throw error;
+      if (options?.signal?.aborted || findAbort(error)) throw error;
       throw embeddingOverflowError(error) ?? error;
     }
   }

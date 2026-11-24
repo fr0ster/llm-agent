@@ -4,6 +4,7 @@ import {
   beginEmbeddingRequest,
   type CallOptions,
   embeddingOverflowError,
+  findAbort,
   type IUsageRecorder,
   RagError,
   startOperation,
@@ -123,19 +124,12 @@ export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
       });
       return result;
     } catch (error) {
+      const aborted = options?.signal?.aborted || findAbort(error);
       request.end({
-        outcome:
-          options?.signal?.aborted ||
-          (error instanceof Error && error.name === 'AbortError')
-            ? 'aborted'
-            : 'error',
+        outcome: aborted ? 'aborted' : 'error',
         error,
       });
-      if (
-        options?.signal?.aborted ||
-        (error instanceof Error && error.name === 'AbortError')
-      )
-        throw error;
+      if (aborted) throw error;
       throw embeddingOverflowError(error) ?? error;
     }
   }
@@ -187,19 +181,12 @@ export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
       });
       return result;
     } catch (error) {
+      const aborted = options?.signal?.aborted || findAbort(error);
       request.end({
-        outcome:
-          options?.signal?.aborted ||
-          (error instanceof Error && error.name === 'AbortError')
-            ? 'aborted'
-            : 'error',
+        outcome: aborted ? 'aborted' : 'error',
         error,
       });
-      if (
-        options?.signal?.aborted ||
-        (error instanceof Error && error.name === 'AbortError')
-      )
-        throw error;
+      if (aborted) throw error;
       throw embeddingOverflowError(error) ?? error;
     }
   }

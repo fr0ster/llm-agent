@@ -8,7 +8,8 @@ import type {
   SkillsEmbeddingDescriptor,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  contextExceededError,
+  findAbort,
+  overflowError,
   SkillsIncompatibleError,
 } from '@mcp-abap-adt/llm-agent'; // value (class)
 
@@ -117,10 +118,10 @@ export function makeCompatibleSkillsRag(
         const threshold = opts.threshold ?? 0.3;
         return hits.filter((h) => h.score >= threshold);
       } catch (e) {
-        const overflow = contextExceededError(e);
+        const overflow = overflowError(e);
         if (overflow) throw overflow;
         const n = (e as Error)?.name;
-        if (n === 'AbortError' || n === 'TimeoutError') return []; // deadline hit → empty, no crash
+        if (findAbort(e, options?.signal) || n === 'TimeoutError') return []; // deadline hit → empty, no crash
         throw e;
       } finally {
         deps.backend.release?.(snap.revision); // EXACT retention: release the lease

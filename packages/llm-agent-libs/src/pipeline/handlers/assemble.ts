@@ -13,11 +13,12 @@ import {
  */
 
 import {
-  contextExceededError,
+  copyErrorUsage,
   type McpTool,
   OrchestratorError,
 } from '@mcp-abap-adt/llm-agent';
 import type { ISpan } from '../../tracer/types.js';
+import { runInterruption } from '../../utils/with-abort.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 
@@ -86,8 +87,11 @@ export class AssembleHandler implements IStageHandler {
 
     if (!result.ok) {
       ctx.error =
-        contextExceededError(result.error) ??
-        new OrchestratorError(result.error.message, 'ASSEMBLER_ERROR');
+        runInterruption(ctx.options?.signal, [result.error]) ??
+        copyErrorUsage(
+          new OrchestratorError(result.error.message, 'ASSEMBLER_ERROR'),
+          result.error,
+        );
       return false;
     }
 

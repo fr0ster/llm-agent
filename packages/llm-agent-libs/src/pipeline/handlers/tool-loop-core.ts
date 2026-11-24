@@ -18,12 +18,13 @@ import type {
   TimingEntry,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  contextExceededError,
   markExternalTraceUnavailable,
   OrchestratorError,
+  overflowError,
   recordToolInvocation,
   scopedUsage,
   type ToolTrust,
+  toAbortError,
   toModelToolMessages,
 } from '@mcp-abap-adt/llm-agent';
 import type { IMetrics } from '../../metrics/types.js';
@@ -66,7 +67,8 @@ export function guardToolRound(
   try {
     return options?.toolRoundGuard?.(calls);
   } catch (error) {
-    const terminal = contextExceededError(error);
+    const terminal =
+      toAbortError(error, options?.signal) ?? overflowError(error);
     if (terminal) throw terminal;
     const message = error instanceof Error ? error.message : String(error);
     return new Map(calls.map((_, index) => [index, message]));
@@ -490,7 +492,7 @@ export async function* executeToolBatchWithHeartbeat(
     toolSpan.setStatus(res.ok ? 'ok' : 'error', res.ok ? undefined : text);
     toolSpan.end();
     if (!res.ok) {
-      const terminal = contextExceededError(res.error);
+      const terminal = overflowError(res.error, options?.signal);
       if (terminal) throw terminal;
     }
     return {

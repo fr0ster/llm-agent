@@ -55,7 +55,6 @@ import {
   asymmetricEmbedder,
   buildNamespacedTools,
   CircuitBreaker,
-  contextExceededError,
   contextOverflowInSettled,
   defaultToolNamespace,
   type IAuxiliaryMcpTools,
@@ -66,6 +65,7 @@ import {
   type IStepExecutionControl,
   type IWaitStrategy,
   isReadinessReporter,
+  overflowError,
   resolveClientDescriptors,
   SimpleRagProviderRegistry,
   symmetricEmbedder,
@@ -780,7 +780,7 @@ export function buildMcpBridge(
         : undefined;
       const listed = await client.listTools(opts);
       if (!listed.ok) {
-        const terminal = contextExceededError(listed.error);
+        const terminal = overflowError(listed.error);
         if (terminal) throw terminal;
         // FAIL LOUD on an availability failure: a transient listTools() outage must
         // NOT make the tool look merely absent (→ "Tool not found"/tool-blind). A
@@ -793,7 +793,7 @@ export function buildMcpBridge(
       if (!owns) continue;
       const result = await client.callTool(name, safeArgs, opts);
       if (!result.ok) {
-        const terminal = contextExceededError(result.error);
+        const terminal = overflowError(result.error);
         if (terminal) throw terminal;
         // Availability failure → fail loud; a tool-level error → LLM feedback
         // text WITH isError:true so the caller can see it failed (#213).
@@ -2137,7 +2137,7 @@ export class SmartServer {
         adapterMap,
       ).catch((err) => {
         if (!res.headersSent) {
-          const terminal = contextExceededError(err);
+          const terminal = overflowError(err);
           const contextExceeded = terminal !== undefined;
           res.writeHead(contextExceeded ? 400 : 500, {
             'Content-Type': 'application/json',

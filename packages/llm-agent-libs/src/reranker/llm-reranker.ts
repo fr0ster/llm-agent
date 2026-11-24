@@ -4,13 +4,14 @@ import {
   addCacheTokenUsage,
   type CallOptions,
   collectWithContextOverflow,
-  contextExceededError,
+  copyErrorUsage,
   formatTrustTag,
   RagError,
   type RagResult,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
 import { assertPositiveInteger } from '../util/assert-positive-integer.js';
+import { runInterruption } from '../utils/with-abort.js';
 import { PASSAGE_QUESTION } from './decision-reranker.js';
 import type { IReranker } from './types.js';
 
@@ -94,16 +95,16 @@ export class LlmReranker implements IReranker {
       const batch = await collectWithContextOverflow(
         slice.map((b) => this._scoreBatch(query, b.items, options)),
         (result) => (result.ok ? undefined : result.error),
-        { rejectImmediately: true },
       );
       if (!batch.ok) {
         return {
           ok: false,
-          error: Object.assign(
-            new RagError(batch.error.message, 'RERANK_ERROR'),
-            {
+          error: copyErrorUsage(
+            new RagError(batch.error.message, 'RERANK_ERROR', {
               cause: batch.error,
-            },
+              status: batch.error.status,
+            }),
+            batch.error,
           ),
         };
       }
@@ -167,8 +168,11 @@ export class LlmReranker implements IReranker {
         return {
           ok: false,
           error:
-            contextExceededError(res.error) ??
-            new RagError(res.error.message, 'RERANK_ERROR'),
+            runInterruption(options?.signal, [res.error]) ??
+            copyErrorUsage(
+              new RagError(res.error.message, 'RERANK_ERROR'),
+              res.error,
+            ),
         };
       }
       // Meter the call before parsing: an out-of-contract reply is billed too.
@@ -185,8 +189,11 @@ export class LlmReranker implements IReranker {
       return {
         ok: false,
         error:
-          contextExceededError(err) ??
-          new RagError(`Reranking failed: ${String(err)}`, 'RERANK_ERROR'),
+          runInterruption(options?.signal, [err]) ??
+          copyErrorUsage(
+            new RagError(`Reranking failed: ${String(err)}`, 'RERANK_ERROR'),
+            err,
+          ),
       };
     }
   }

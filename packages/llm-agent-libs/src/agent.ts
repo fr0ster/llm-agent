@@ -41,7 +41,7 @@ import type {
 import {
   type AgentCallOptions,
   addCacheTokenUsage,
-  contextExceededError,
+  copyErrorUsage,
   type IQueryExpander,
   isReadinessReporter,
   type LlmUsage,
@@ -50,11 +50,13 @@ import {
   NoopToolCache,
   normalizeExternalTools,
   OrchestratorError,
+  overflowError,
   QueryEmbedding,
   type SmartAgentResponse,
   type StopReason,
   StreamingLlmCallStrategy,
   TextOnlyEmbedding,
+  toAbortError,
   toModelToolMessages,
   toolNameFromRecord,
   toToolCallDelta,
@@ -89,10 +91,8 @@ export {
 import type { IPipeline } from './interfaces/pipeline.js';
 import type { ILogger } from './logger/index.js';
 import {
-  errorUsage,
   llmWithChatUsage,
   mergeUsageCalls,
-  withUsageAttribution,
   withUsageCalls,
 } from './logger/llm-call-usage.js';
 import { NoopRequestLogger } from './logger/noop-request-logger.js';
@@ -1044,14 +1044,12 @@ export class SmartAgent {
       rootSpan.setStatus('ok');
     } catch (error) {
       const calls = workerLogger?.usageCalls ?? [];
-      const terminal = contextExceededError(error);
+      const terminal =
+        toAbortError(error, opts?.signal) ?? overflowError(error);
       if (!terminal) throw withUsageCalls(error, calls);
       yield {
         ok: false,
-        error: withUsageCalls(
-          withUsageAttribution(terminal, errorUsage(error)),
-          calls,
-        ),
+        error: withUsageCalls(copyErrorUsage(terminal, error), calls),
       };
     } finally {
       if (ephemeralSession && identity.kind === 'caller') {

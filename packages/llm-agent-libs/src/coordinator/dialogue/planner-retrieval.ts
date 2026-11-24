@@ -10,7 +10,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   collectWithContextOverflow,
-  contextExceededError,
+  overflowError,
   QueryEmbedding,
   scopedUsage,
   terminalRunError,
@@ -173,7 +173,7 @@ export async function retrievePlannerContext(
                   { ...scoped, ragFilter: { sessionId } },
                 );
                 if (!result.ok) {
-                  const overflow = contextExceededError(result.error);
+                  const overflow = overflowError(result.error);
                   if (overflow) throw overflow;
                 }
                 signal.throwIfAborted();
@@ -219,7 +219,7 @@ export async function retrievePlannerContext(
                   .slice(0, config.memoryK ?? 8);
               } catch (error) {
                 const terminal =
-                  contextExceededError(error) ??
+                  overflowError(error) ??
                   (!signal.aborted && terminalRunError(error));
                 if (terminal) throw terminal;
                 warn('Planner memory retrieval failed or timed out');
@@ -252,7 +252,7 @@ export async function retrievePlannerContext(
                 output.knowledge = knowledgeResults.flat();
               } catch (error) {
                 const terminal =
-                  contextExceededError(error) ??
+                  overflowError(error) ??
                   (!signal.aborted && terminalRunError(error));
                 if (terminal) throw terminal;
                 warn(
@@ -271,7 +271,7 @@ export async function retrievePlannerContext(
     );
   } catch (error) {
     const terminal =
-      contextExceededError(error) ??
+      overflowError(error) ??
       terminalRunError(options.signal?.reason) ??
       terminalRunError(error);
     if (terminal) throw terminal;

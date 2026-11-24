@@ -1,9 +1,9 @@
 import {
   type CallOptions,
-  contextExceededError,
   finishDialogueTask,
   type IMcpClient,
   type LlmTool,
+  overflowError,
 } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 
@@ -97,7 +97,7 @@ export async function withSubmitReport(
     }
     const listed = await client.listTools(options);
     if (!listed.ok) {
-      const overflow = contextExceededError(listed.error);
+      const overflow = overflowError(listed.error);
       if (overflow) throw overflow;
     }
     const tool = listed.ok

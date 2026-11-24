@@ -1,6 +1,7 @@
 import { randomUUID as listStoreId, randomUUID } from 'node:crypto';
+import { copyErrorUsage } from '../errors/error-usage.js';
 import { toRagError } from '../errors/rag-error.js';
-import { contextExceededError } from '../errors/terminal-run-error.js';
+import { overflowError } from '../errors/terminal-run-error.js';
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type {
   IRag,
@@ -246,7 +247,10 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       for (const enricher of this.documentEnrichers) {
         const eResult = await enricher.enrich(enrichedText, options);
         if (!eResult.ok)
-          return { ok: false, error: toRagError(eResult.error, 'RAG_ERROR') };
+          return {
+            ok: false,
+            error: toRagError(eResult.error, 'RAG_ERROR', options?.signal),
+          };
         enrichedText = eResult.value;
       }
       const vectors = await embedRecord(
@@ -258,11 +262,20 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       options?.signal?.throwIfAborted();
       return this.upsertKnownVectors(enrichedText, vectors, metadata);
     } catch (err) {
-      const terminal = contextExceededError(err);
+      const terminal = overflowError(err, options?.signal);
       if (terminal) return { ok: false, error: terminal };
       if (options?.signal?.aborted)
-        return { ok: false, error: new RagError('Aborted', 'ABORTED') };
-      return { ok: false, error: toRagError(err, 'UPSERT_ERROR') };
+        return {
+          ok: false,
+          error: copyErrorUsage(
+            toRagError(options.signal.reason, 'ABORTED', options.signal),
+            err,
+          ),
+        };
+      return {
+        ok: false,
+        error: toRagError(err, 'UPSERT_ERROR', options?.signal),
+      };
     }
   }
 
@@ -307,7 +320,10 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       for (const pp of this.queryPreprocessors) {
         const ppResult = await pp.process(searchText, options);
         if (!ppResult.ok)
-          return { ok: false, error: toRagError(ppResult.error, 'RAG_ERROR') };
+          return {
+            ok: false,
+            error: toRagError(ppResult.error, 'RAG_ERROR', options?.signal),
+          };
         searchText = ppResult.value;
       }
       const nowSecs = Date.now() / 1000;
@@ -376,9 +392,12 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
 
       return { ok: true, value: scored };
     } catch (err) {
-      const terminal = contextExceededError(err);
+      const terminal = overflowError(err, options?.signal);
       if (terminal) return { ok: false, error: terminal };
-      return { ok: false, error: toRagError(err, 'QUERY_ERROR') };
+      return {
+        ok: false,
+        error: toRagError(err, 'QUERY_ERROR', options?.signal),
+      };
     }
   }
 

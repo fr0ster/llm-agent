@@ -15,6 +15,7 @@ import type {
 import {
   BaseLLMProvider,
   type beginLlmRequest,
+  findAbort,
   LlmError,
   MODEL_CONTEXT_EXCEEDED,
   requestShape,
@@ -841,8 +842,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     } finally {
       handle.end({
         outcome: streamError
-          ? options?.signal?.aborted ||
-            (streamError instanceof Error && streamError.name === 'AbortError')
+          ? options?.signal?.aborted || findAbort(streamError)
             ? 'aborted'
             : 'error'
           : completed

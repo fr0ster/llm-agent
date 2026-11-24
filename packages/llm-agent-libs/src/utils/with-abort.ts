@@ -1,9 +1,8 @@
 import {
   abortRunError,
-  contextExceededError,
-  embeddingContextExceededError,
-  isAbortReason,
-  SmartAgentError,
+  findAbort,
+  overflowError,
+  type SmartAgentError,
 } from '@mcp-abap-adt/llm-agent';
 
 /** Recognize cancellation before inspecting causes for independent overflows. */
@@ -15,18 +14,18 @@ export function runInterruption<T>(
   let aborted: SmartAgentError | undefined;
   let rethrow: (() => never) | undefined;
   for (const error of errors) {
-    if (isAbortReason(error, signal)) {
-      aborted ??= abortRunError(signal?.reason, error);
-      rethrow ??= () => {
-        throw error;
-      };
-    } else if (error instanceof SmartAgentError && error.code === 'ABORTED') {
-      aborted ??= error;
-    } else if (error instanceof Error && error.name === 'AbortError') {
-      aborted ??= abortRunError(error, error);
+    const abort = findAbort(error, signal);
+    if (abort) {
+      aborted ??= abortRunError(
+        abort.fromSignal ? signal?.reason : abort.reason,
+        error,
+      );
+      if (abort.fromSignal)
+        rethrow ??= () => {
+          throw error;
+        };
     } else {
-      const overflow =
-        contextExceededError(error) ?? embeddingContextExceededError(error);
+      const overflow = overflowError(error);
       if (overflow) return overflow;
     }
   }

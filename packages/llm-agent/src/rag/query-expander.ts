@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { contextExceededError } from '../errors/terminal-run-error.js';
+import { toAbortError } from '../errors/abort-run-error.js';
+import { copyErrorUsage } from '../errors/error-usage.js';
+import { overflowError } from '../errors/terminal-run-error.js';
 import type { ILlm } from '../interfaces/llm.js';
 import type { IRequestLogger } from '../interfaces/request-logger.js';
 import {
@@ -72,8 +74,12 @@ export class LlmQueryExpander implements IQueryExpander {
         return {
           ok: false,
           error:
-            contextExceededError(res.error) ??
-            new RagError(res.error.message, 'QUERY_EXPAND_ERROR'),
+            toAbortError(res.error, options?.signal) ??
+            overflowError(res.error) ??
+            copyErrorUsage(
+              new RagError(res.error.message, 'QUERY_EXPAND_ERROR'),
+              res.error,
+            ),
         };
       }
 
@@ -88,10 +94,14 @@ export class LlmQueryExpander implements IQueryExpander {
       return {
         ok: false,
         error:
-          contextExceededError(err) ??
-          new RagError(
-            `Query expansion failed: ${String(err)}`,
-            'QUERY_EXPAND_ERROR',
+          toAbortError(err, options?.signal) ??
+          overflowError(err) ??
+          copyErrorUsage(
+            new RagError(
+              `Query expansion failed: ${String(err)}`,
+              'QUERY_EXPAND_ERROR',
+            ),
+            err,
           ),
       };
     }

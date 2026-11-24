@@ -1,44 +1,60 @@
 import { OrchestratorError } from '../interfaces/agent-contracts.js';
 import { SmartAgentError } from '../interfaces/types.js';
-import {
-  errorUsage,
-  originalUsageError,
-  withUsageAttribution,
-} from './error-usage.js';
+import { errorCauseChain } from './error-details.js';
+import { copyErrorUsage, originalUsageError } from './error-usage.js';
 
-/** Recognize a signal's reason through usage copies and cause wrappers. */
-export function isAbortReason<T>(error: T, signal?: AbortSignal): boolean {
-  if (!signal?.aborted) return false;
-  const suppliedReason = signal.reason;
-  const reason =
-    typeof suppliedReason === 'object' && suppliedReason !== null
-      ? originalUsageError(suppliedReason)
-      : suppliedReason;
-  if (Object.is(error, reason)) return true;
-  if (typeof error !== 'object' || error === null) return false;
+const abortCodes = new Set<string>(['ABORTED', 'ABORT_ERR', 'ERR_CANCELED']);
+const abortNames = new Set<string>(['AbortError', 'CanceledError']);
 
-  const seen = new Set<object>();
-  let current: object = error;
-  while (!seen.has(current)) {
-    if (originalUsageError(current) === reason) return true;
-    seen.add(current);
-    const cause = 'cause' in current ? current.cause : undefined;
-    if (Object.is(cause, reason)) return true;
-    if (typeof cause !== 'object' || cause === null) break;
-    current = cause;
+/** Find cancellation through cause wrappers and copies carrying telemetry. */
+export function findAbort<T>(
+  error: T,
+  signal?: AbortSignal,
+): { fromSignal: true } | { fromSignal: false; reason: object } | undefined {
+  const signalReason = signal?.aborted ? signal.reason : undefined;
+  const originalReason =
+    typeof signalReason === 'object' && signalReason !== null
+      ? originalUsageError(signalReason)
+      : signalReason;
+  if (signal?.aborted && Object.is(error, originalReason))
+    return { fromSignal: true };
+  let reason: object | undefined;
+  for (const current of errorCauseChain(error)) {
+    if (
+      signal?.aborted &&
+      (originalUsageError(current) === originalReason ||
+        ('cause' in current && Object.is(current.cause, originalReason)))
+    )
+      return { fromSignal: true };
+    if (
+      !reason &&
+      (('code' in current &&
+        typeof current.code === 'string' &&
+        abortCodes.has(current.code)) ||
+        ('name' in current &&
+          typeof current.name === 'string' &&
+          abortNames.has(current.name)))
+    )
+      reason = current;
   }
-  return false;
+  return reason && { reason, fromSignal: false };
 }
 
-export function isTypedAbort<T>(
+/** Normalize a recognized abort, keeping the reason and error telemetry. */
+export function toAbortError<T>(
   error: T,
-): error is T & SmartAgentError & { readonly code: 'ABORTED' } {
-  return error instanceof SmartAgentError && error.code === 'ABORTED';
+  signal?: AbortSignal,
+): SmartAgentError | undefined {
+  const abort = findAbort(error, signal);
+  return (
+    abort &&
+    abortRunError(abort.fromSignal ? signal?.reason : abort.reason, error)
+  );
 }
 
 export function abortRunError<T, U>(reason: T, error?: U): SmartAgentError {
-  if (isTypedAbort(reason))
-    return withUsageAttribution(reason, errorUsage(error));
+  if (reason instanceof SmartAgentError && reason.code === 'ABORTED')
+    return copyErrorUsage(reason, error);
   const message =
     typeof reason === 'object' &&
     reason !== null &&
@@ -46,8 +62,9 @@ export function abortRunError<T, U>(reason: T, error?: U): SmartAgentError {
     typeof reason.message === 'string'
       ? reason.message
       : String(reason);
-  return Object.assign(new OrchestratorError(message, 'ABORTED'), {
-    ...errorUsage(reason),
-    ...errorUsage(error),
-  });
+  return copyErrorUsage(
+    new OrchestratorError(message, 'ABORTED', { cause: error ?? reason }),
+    error,
+    reason,
+  );
 }

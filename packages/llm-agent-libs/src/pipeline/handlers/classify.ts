@@ -8,9 +8,10 @@
  * the input is treated as a single action subprompt.
  */
 
-import { contextExceededError } from '@mcp-abap-adt/llm-agent';
+import { copyErrorUsage } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import type { ISpan } from '../../tracer/types.js';
+import { runInterruption } from '../../utils/with-abort.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 
@@ -35,8 +36,11 @@ export class ClassifyHandler implements IStageHandler {
     const result = await ctx.classifier.classify(ctx.inputText, ctx.options);
     if (!result.ok) {
       ctx.error =
-        contextExceededError(result.error) ??
-        new OrchestratorError(result.error.message, 'CLASSIFIER_ERROR');
+        runInterruption(ctx.options?.signal, [result.error]) ??
+        copyErrorUsage(
+          new OrchestratorError(result.error.message, 'CLASSIFIER_ERROR'),
+          result.error,
+        );
       return false;
     }
 

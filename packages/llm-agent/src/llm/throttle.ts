@@ -28,12 +28,17 @@
  */
 
 import { setImmediate } from 'node:timers/promises';
+import { findAbort } from '../errors/abort-run-error.js';
+import {
+  authenticationFailureIn,
+  httpStatusIn,
+} from '../errors/error-details.js';
+import { overflowError } from '../errors/terminal-run-error.js';
 import {
   type IThrottleStrategy,
   ReportThrottling,
   type ThrottleDecision,
 } from '../interfaces/throttle-strategy.js';
-import { MODEL_CONTEXT_EXCEEDED } from '../interfaces/types.js';
 import {
   DefaultWaitStrategy,
   type IWaitStrategy,
@@ -471,12 +476,7 @@ async function attemptWithGate<T>(
     try {
       return await fn();
     } catch (error) {
-      const details =
-        typeof error === 'object' && error !== null ? error : undefined;
-      for (const cause of errorCauseChain(details)) {
-        if ('code' in cause && cause.code === MODEL_CONTEXT_EXCEEDED)
-          throw error;
-      }
+      if (findAbort(error, opts.signal) || overflowError(error)) throw error;
       if (!opts.isThrottled(error)) {
         const transient = opts.transient;
         if (
@@ -706,63 +706,6 @@ export function retryAfterSecondsOf(
   return undefined;
 }
 
-/** Status of an axios-shaped error, or undefined when it is shaped otherwise. */
-export function httpStatusOf(error: object | undefined): number | undefined {
-  for (const current of errorCauseChain(error)) {
-    const status = ownHttpStatus(current);
-    if (status !== undefined) return status;
-  }
-  return undefined;
-}
-
-function ownHttpStatus(error: object): number | undefined {
-  const response = 'response' in error ? error.response : undefined;
-  // Axios keeps it under response; several SDKs hoist it onto the error itself.
-  return [
-    response && typeof response === 'object' && 'status' in response
-      ? response.status
-      : undefined,
-    'status' in error ? error.status : undefined,
-    'statusCode' in error ? error.statusCode : undefined,
-  ].find((value) => typeof value === 'number');
-}
-
-const authenticationCodes = new Set([
-  'authentication',
-  'authentication_error',
-  'authentication_failed',
-  'authorization',
-  'bad_credentials',
-  'credentials_rejected',
-  'decision_auth',
-  'forbidden',
-  'invalid_api_key',
-  'invalid_token',
-  'permission_error',
-  'token_expired',
-  'unauthorized',
-]);
-
-/** Identify authentication failures from structured statuses, codes, and error names. */
-export function isAuthenticationFailure(error: object | undefined): boolean {
-  for (const current of errorCauseChain(error)) {
-    const code = 'code' in current ? current.code : undefined;
-    const status = ownHttpStatus(current);
-    if (
-      status === 401 ||
-      status === 403 ||
-      (typeof code === 'string' &&
-        authenticationCodes.has(code.toLowerCase())) ||
-      (current instanceof Error &&
-        (current.name === 'AuthenticationError' ||
-          current.constructor.name === 'AuthenticationError'))
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
 /** One header, case-insensitively, from a transport header collection. */
 function headerOf<T>(headers: T, name: string): string | undefined {
   if (!headers || typeof headers !== 'object') return undefined;
@@ -776,6 +719,14 @@ function headerOf<T>(headers: T, name: string): string | undefined {
       return String(value);
   }
   return undefined;
+}
+
+export function httpStatusOf(error: object | undefined): number | undefined {
+  return httpStatusIn(errorCauseChain(error));
+}
+
+export function isAuthenticationFailure(error: object | undefined): boolean {
+  return authenticationFailureIn(errorCauseChain(error));
 }
 
 /** Inspect at most five errors, starting with the outermost SDK wrapper. */

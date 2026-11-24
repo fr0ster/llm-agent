@@ -1,5 +1,7 @@
 import { z } from 'zod';
-import { contextExceededError } from '../../errors/terminal-run-error.js';
+import { toAbortError } from '../../errors/abort-run-error.js';
+import { copyErrorUsage } from '../../errors/error-usage.js';
+import { overflowError } from '../../errors/terminal-run-error.js';
 import type {
   IRagEditor,
   IRagProviderRegistry,
@@ -69,13 +71,17 @@ export interface RagCollectionToolOptions {
 type Refusal = { ok: false; error: string; code?: string };
 
 function editFailure(error: RagError): Refusal {
-  const overflow = contextExceededError(error);
+  const abort = toAbortError(error);
+  if (abort) throw abort;
+  const overflow = overflowError(error);
   if (overflow) {
     if (overflow.cause !== undefined) throw overflow;
-    throw Object.defineProperty(
-      new SmartAgentError(overflow.message, overflow.code),
-      'cause',
-      { value: overflow, configurable: true, writable: true },
+    throw copyErrorUsage(
+      new SmartAgentError(overflow.message, overflow.code, {
+        cause: overflow,
+        status: overflow.status,
+      }),
+      overflow,
     );
   }
   return { ok: false, error: error.message };

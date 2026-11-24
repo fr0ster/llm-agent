@@ -9,7 +9,7 @@ import type {
   LLMProvider,
   Message,
 } from '@mcp-abap-adt/llm-agent';
-import { contextExceededError } from '@mcp-abap-adt/llm-agent';
+import { overflowError } from '@mcp-abap-adt/llm-agent';
 import {
   type MCPClientConfig,
   MCPClientWrapper,
@@ -94,7 +94,7 @@ export class Agent {
         raw: llmResponse.raw,
       };
     } catch (error) {
-      const terminal = contextExceededError(error);
+      const terminal = overflowError(error);
       if (terminal) throw terminal;
       const errorMessage =
         error instanceof Error ? error.message : String(error);

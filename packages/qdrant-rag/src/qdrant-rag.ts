@@ -9,7 +9,6 @@ import {
   assertNonEmptyFilter,
   assertScanOptions,
   type CallOptions,
-  contextExceededError,
   decodeListCursor,
   embedRecord,
   encodeListCursor,
@@ -18,6 +17,7 @@ import {
   listCursorScope,
   listMetadata,
   matchesRagIdentity,
+  overflowError,
   prepareList,
   QueryEmbedding,
   type RagDocumentVectors,
@@ -289,7 +289,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
         options,
       );
     } catch (err) {
-      const overflow = contextExceededError(err);
+      const overflow = overflowError(err, options?.signal);
       if (overflow) return { ok: false, error: overflow };
       if (options?.signal?.aborted)
         return { ok: false, error: new RagError('Aborted', 'ABORTED') };
@@ -398,7 +398,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
       return {
         ok: false,
         error:
-          contextExceededError(err) ??
+          overflowError(err, options?.signal) ??
           (err instanceof RagError
             ? err
             : this._scanFailure(err, 'QUERY_ERROR', options)),

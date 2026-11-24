@@ -205,7 +205,7 @@ test('lazy dimension probe: no embed at construction; first activeManifest probe
   assert.equal(embeds, 1); // one probe
 });
 
-test('skills recall preserves overflow wrapped by a cancellation-shaped error', async () => {
+test('skills recall handles a cancellation wrapping overflow', async () => {
   const overflow = new RagError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
   const rag = makeCompatibleSkillsRag({
     backend: {
@@ -225,5 +225,5 @@ test('skills recall preserves overflow wrapped by a cancellation-shaped error', 
     }),
     ...MANIFEST,
   });
-  await assert.rejects(rag.query('q', { k: 1 }), (error) => error === overflow);
+  assert.deepEqual(await rag.query('q', { k: 1 }), []);
 });

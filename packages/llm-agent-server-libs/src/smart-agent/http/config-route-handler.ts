@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ILlm, IModelResolver, LlmError } from '@mcp-abap-adt/llm-agent';
-import { contextExceededError } from '@mcp-abap-adt/llm-agent';
+import { overflowError } from '@mcp-abap-adt/llm-agent';
 import type {
   SmartAgent,
   SmartAgentReconfigureOptions,
@@ -196,11 +196,11 @@ export async function handleConfigUpdate(
           if (probe.ok) continue;
           failure = probe.error;
         } catch (error) {
-          const terminal = contextExceededError(error);
+          const terminal = overflowError(error);
           if (!terminal) throw error;
           failure = terminal;
         }
-        const terminal = contextExceededError(failure);
+        const terminal = overflowError(failure);
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(
           jsonError(

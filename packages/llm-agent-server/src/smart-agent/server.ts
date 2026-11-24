@@ -3,8 +3,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
 import type { CallOptions, Message } from '@mcp-abap-adt/llm-agent';
 import {
-  contextExceededError,
+  EMBEDDING_CONTEXT_EXCEEDED,
   MODEL_CONTEXT_EXCEEDED,
+  overflowError,
   promptCacheOptions,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
@@ -53,7 +54,7 @@ function jsonError(message: string, type: string, code?: string): string {
 }
 
 function llmFailureType(code: string): string {
-  return code === MODEL_CONTEXT_EXCEEDED
+  return code === MODEL_CONTEXT_EXCEEDED || code === EMBEDDING_CONTEXT_EXCEEDED
     ? 'invalid_request_error'
     : 'server_error';
 }
@@ -241,7 +242,7 @@ export class SmartAgentServer {
           opts,
         )) {
           if (!chunk.ok) {
-            const terminal = contextExceededError(chunk.error);
+            const terminal = overflowError(chunk.error);
             if (terminal) {
               res.end(
                 `data: ${jsonError(terminal.message, llmFailureType(terminal.code), terminal.code)}\n\n`,
@@ -421,8 +422,8 @@ export class SmartAgentServer {
       const result = await this.agent.process(body.messages, opts);
 
       if (!result.ok) {
-        const error = contextExceededError(result.error) ?? result.error;
-        res.writeHead(error.code === MODEL_CONTEXT_EXCEEDED ? 400 : 500, {
+        const error = overflowError(result.error) ?? result.error;
+        res.writeHead(overflowError(error) ? 400 : 500, {
           'Content-Type': 'application/json',
         });
         res.end(
@@ -477,7 +478,7 @@ export class SmartAgentServer {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(response));
     } catch (error) {
-      const overflow = contextExceededError(error);
+      const overflow = overflowError(error);
       if (!overflow) throw error;
       const payload = jsonError(
         overflow.message,

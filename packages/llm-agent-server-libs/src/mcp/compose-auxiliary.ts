@@ -9,7 +9,7 @@ import type {
   McpToolResult,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { contextExceededError } from '@mcp-abap-adt/llm-agent';
+import { overflowError } from '@mcp-abap-adt/llm-agent';
 import { mcpContentToText } from './mcp-content.js';
 
 type CallMcp = (
@@ -34,7 +34,7 @@ export async function resolveAuxDefs(
 ): Promise<McpTool[]> {
   const listed = await aux.listTools();
   if (!listed.ok) {
-    const overflow = contextExceededError(listed.error);
+    const overflow = overflowError(listed.error);
     if (overflow) throw overflow;
     throw new Error(
       `auxiliary tools failed to list at build: ${listed.error.message}`,
@@ -116,7 +116,7 @@ export function composeAuxiliaryBridge(
       signal: signal ?? options?.signal,
     });
     if (!result.ok) {
-      const terminal = contextExceededError(result.error);
+      const terminal = overflowError(result.error);
       if (terminal) throw terminal;
       return { text: result.error.message, isError: true };
     }

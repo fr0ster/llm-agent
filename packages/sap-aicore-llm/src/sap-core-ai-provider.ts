@@ -23,6 +23,7 @@ import type {
 import {
   BaseLLMProvider,
   type beginLlmRequest,
+  findAbort,
   httpStatusOf,
   LlmError,
   type LlmRequestFacts,
@@ -676,7 +677,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       request?.end({
         ...facts,
         outcome: failure
-          ? options?.signal?.aborted || isAbortError(failure)
+          ? options?.signal?.aborted || findAbort(failure)
             ? 'aborted'
             : 'error'
           : completed
@@ -1122,14 +1123,6 @@ function returnedSdkError(response: { _data?: unknown }): boolean {
     typeof response._data === 'object' &&
     'error' in response._data &&
     !!response._data.error
-  );
-}
-
-function isAbortError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
-  return (
-    ('name' in error && error.name === 'AbortError') ||
-    ('code' in error && error.code === 'ERR_CANCELED')
   );
 }
 

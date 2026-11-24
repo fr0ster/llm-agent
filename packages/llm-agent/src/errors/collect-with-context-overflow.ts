@@ -1,5 +1,5 @@
 import type { Result, SmartAgentError } from '../interfaces/types.js';
-import { contextExceededError } from './terminal-run-error.js';
+import { overflowError } from './terminal-run-error.js';
 
 /** Settle on the first overflow, or preserve the batch's values or first ordinary rejection. */
 export async function collectWithContextOverflow<T>(
@@ -9,7 +9,7 @@ export async function collectWithContextOverflow<T>(
 ): Promise<Result<T[], SmartAgentError>> {
   return new Promise((resolve, reject) => {
     const reportOverflow = <E>(error: E) => {
-      const failure = contextExceededError(error);
+      const failure = overflowError(error);
       if (failure) resolve({ ok: false, error: failure });
     };
     const watched = operations.map((operation) =>
@@ -39,7 +39,7 @@ export function contextOverflowInSettled<T>(
   failureOf?: (value: T) => Error | undefined,
 ): SmartAgentError | undefined {
   for (const result of settled) {
-    const overflow = contextExceededError(
+    const overflow = overflowError(
       result.status === 'rejected' ? result.reason : failureOf?.(result.value),
     );
     if (overflow) return overflow;

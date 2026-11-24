@@ -3,16 +3,15 @@ import {
   MODEL_CONTEXT_EXCEEDED,
   SmartAgentError,
 } from '../interfaces/types.js';
+import { findAbort, toAbortError } from './abort-run-error.js';
 import {
   errorCauseChain,
   httpStatusOf,
   isAuthenticationFailure,
-} from '../llm/throttle.js';
-import { isTypedAbort } from './abort-run-error.js';
-import { errorUsage, withUsageAttribution } from './error-usage.js';
+} from './error-details.js';
+import { copyErrorUsage } from './error-usage.js';
 
 const terminalCodes = new Set([
-  'ABORTED',
   'DECISION_ABORTED',
   'LLM_OUTPUT_TRUNCATED',
   'LLM_HTTP_ERROR',
@@ -28,9 +27,13 @@ const terminalCodes = new Set([
 ]);
 
 /** Return the typed failure that must bypass retries, recovery, and fallback. */
-export function terminalRunError<T>(error: T): SmartAgentError | undefined {
-  const overflow =
-    contextExceededError(error) ?? embeddingContextExceededError(error);
+export function terminalRunError<T>(
+  error: T,
+  signal?: AbortSignal,
+): SmartAgentError | undefined {
+  const abort = toAbortError(error, signal);
+  if (abort) return abort;
+  const overflow = findOverflow(error);
   if (overflow) return overflow;
   const details =
     typeof error === 'object' && error !== null ? error : undefined;
@@ -38,8 +41,6 @@ export function terminalRunError<T>(error: T): SmartAgentError | undefined {
     const code = 'code' in current ? current.code : undefined;
     if (typeof code === 'string' && terminalCodes.has(code))
       return typedFailure(current, code, details);
-    if ('name' in current && current.name === 'AbortError')
-      return typedFailure(current, 'ABORTED', details);
   }
   if (details && isAuthenticationFailure(details))
     return typedFailure(details, 'CREDENTIALS_REJECTED');
@@ -53,7 +54,6 @@ export function terminalRunError<T>(error: T): SmartAgentError | undefined {
     status !== 425 &&
     status !== 429
   ) {
-    if (details instanceof SmartAgentError) return details;
     return typedFailure(details, errorCode(details) ?? 'LLM_HTTP_ERROR');
   }
   return undefined;
@@ -66,8 +66,12 @@ function errorCode(error: object | undefined): string | undefined {
 }
 
 /** Preserve component metadata while giving untyped failures a stable code. */
-export function toRunError<T>(error: T, fallbackCode: string): SmartAgentError {
-  const terminal = terminalRunError(error);
+export function toRunError<T>(
+  error: T,
+  fallbackCode: string,
+  signal?: AbortSignal,
+): SmartAgentError {
+  const terminal = terminalRunError(error, signal);
   if (terminal) return terminal;
   if (typeof error === 'object' && error !== null) {
     for (const current of errorCauseChain(error)) {
@@ -85,46 +89,48 @@ function typedFailure(
   source = error,
 ): SmartAgentError {
   if (error instanceof SmartAgentError)
-    return source === error
-      ? error
-      : withUsageAttribution(error, errorUsage(source));
+    return copyErrorUsage(error, source, error);
   const message =
     'message' in error && typeof error.message === 'string'
       ? error.message
       : code;
-  return Object.assign(
+  return copyErrorUsage(
     new SmartAgentError(message, code, {
       cause: source,
       status: httpStatusOf(source),
     }),
-    errorUsage(error),
-    errorUsage(source),
+    source,
+    error,
   );
 }
 
 /** The terminal error only when it is a model context overflow. */
 export function contextExceededError<T>(error: T): SmartAgentError | undefined {
-  return findRunError(error, MODEL_CONTEXT_EXCEEDED);
+  return findAbort(error) ? undefined : findOverflow(error, true);
 }
 
-/** The terminal error only when an embedder rejected oversized input. */
-export function embeddingContextExceededError<T>(
+/** Find either terminal overflow, preserving the failure and its telemetry. */
+export function overflowError<T>(
   error: T,
+  signal?: AbortSignal,
 ): SmartAgentError | undefined {
-  return findRunError(error, EMBEDDING_CONTEXT_EXCEEDED);
+  return findAbort(error, signal) ? undefined : findOverflow(error);
 }
 
-function findRunError<T>(error: T, code: string): SmartAgentError | undefined {
+function findOverflow<T>(
+  error: T,
+  modelOnly = false,
+): SmartAgentError | undefined {
   if (typeof error !== 'object' || error === null) return undefined;
-  const seen = new Set<object>();
-  let current: object = error;
-  while (!seen.has(current)) {
-    if (isTypedAbort(current)) return undefined;
-    if (errorCode(current) === code) return typedFailure(current, code, error);
-    seen.add(current);
-    const cause = 'cause' in current ? current.cause : undefined;
-    if (typeof cause !== 'object' || cause === null) break;
-    current = cause;
+  let embedding: object | undefined;
+  for (const current of errorCauseChain(error)) {
+    const code = errorCode(current);
+    if (code === MODEL_CONTEXT_EXCEEDED)
+      return typedFailure(current, code, error);
+    if (code === EMBEDDING_CONTEXT_EXCEEDED && !modelOnly)
+      embedding ??= current;
   }
-  return undefined;
+  return (
+    embedding && typedFailure(embedding, EMBEDDING_CONTEXT_EXCEEDED, error)
+  );
 }

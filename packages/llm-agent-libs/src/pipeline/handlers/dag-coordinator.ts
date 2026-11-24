@@ -20,6 +20,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   ClarifySignal,
+  copyErrorUsage,
   NeedInfoSignal,
   terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
@@ -29,6 +30,7 @@ import { AbortErrorStrategy } from '../../coordinator/index.js';
 import { withUsageCalls } from '../../logger/llm-call-usage.js';
 import { summaryToUsage } from '../../logger/session-request-logger.js';
 import type { ISpan } from '../../tracer/types.js';
+import { runInterruption } from '../../utils/with-abort.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 import { logRoleUsage } from './role-usage.js';
@@ -257,10 +259,14 @@ export class DagCoordinatorHandler implements IStageHandler {
       );
     } catch (err) {
       ctx.error =
+        runInterruption(ctx.options?.signal, [err]) ??
         terminalRunError(err) ??
         (err instanceof OrchestratorError
           ? err
-          : new OrchestratorError(errMsg(err), 'COORDINATOR_PLAN_FAILED'));
+          : copyErrorUsage(
+              new OrchestratorError(errMsg(err), 'COORDINATOR_PLAN_FAILED'),
+              err,
+            ));
       return false;
     }
     if ('ended' in planRes) return true;
@@ -298,12 +304,16 @@ export class DagCoordinatorHandler implements IStageHandler {
             // OrchestratorError from runRole (needInfo-no-oracle / budget) is
             // preserved as-is.
             ctx.error =
+              runInterruption(ctx.options?.signal, [err]) ??
               terminalRunError(err) ??
               (err instanceof OrchestratorError
                 ? err
-                : new OrchestratorError(
-                    errMsg(err),
-                    'COORDINATOR_REVIEW_FAILED',
+                : copyErrorUsage(
+                    new OrchestratorError(
+                      errMsg(err),
+                      'COORDINATOR_REVIEW_FAILED',
+                    ),
+                    err,
                   ));
             return false;
           }
@@ -416,12 +426,16 @@ export class DagCoordinatorHandler implements IStageHandler {
           });
         } catch (err) {
           ctx.error =
+            runInterruption(ctx.options?.signal, [err]) ??
             terminalRunError(err) ??
             (err instanceof OrchestratorError
               ? err
-              : new OrchestratorError(
-                  errMsg(err),
-                  codeOf(err) ?? 'COORDINATOR_PLAN_INVALID',
+              : copyErrorUsage(
+                  new OrchestratorError(
+                    errMsg(err),
+                    codeOf(err) ?? 'COORDINATOR_PLAN_INVALID',
+                  ),
+                  err,
                 ));
           return false;
         }
@@ -571,10 +585,14 @@ export class DagCoordinatorHandler implements IStageHandler {
       }
     } catch (err) {
       ctx.error =
+        runInterruption(ctx.options?.signal, [err]) ??
         terminalRunError(err) ??
         (err instanceof OrchestratorError
           ? err
-          : new OrchestratorError(errMsg(err), 'COORDINATOR_STEP_FAILED'));
+          : copyErrorUsage(
+              new OrchestratorError(errMsg(err), 'COORDINATOR_STEP_FAILED'),
+              err,
+            ));
       return false;
     }
   }

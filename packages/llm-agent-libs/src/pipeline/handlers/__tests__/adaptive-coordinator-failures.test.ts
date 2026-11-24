@@ -338,6 +338,55 @@ for (const path of [
   }
 }
 
+for (const scenario of ['abort', 'SDK overflow'] as const) {
+  test(`adaptive planning preserves ${scenario} through QueryEmbedding`, async (t) => {
+    const logger = new DefaultRequestLogger();
+    const failure =
+      scenario === 'abort'
+        ? Object.assign(
+            new Error('Cancelled', {
+              cause: new LlmError('Earlier overflow', MODEL_CONTEXT_EXCEEDED),
+            }),
+            { name: 'AbortError' },
+          )
+        : Object.assign(new Error('input too long'), { status: 400, usage });
+    let calls = 0;
+    const handle = await buildAdaptiveAgent(
+      async () => {
+        await new QueryEmbedding('work', {
+          async embedQuery() {
+            calls++;
+            throw failure;
+          },
+        }).toVector();
+        return assert.fail('unexpected embedding success');
+      },
+      undefined,
+      logger,
+    );
+    t.after(() => handle.close());
+
+    const result = await handle.agent.process('Work', testCallOptions());
+    assert.ok(!result.ok);
+    assert.equal(result.error.message, failure.message);
+    assert.equal(
+      result.error.code,
+      scenario === 'abort' ? 'ABORTED' : EMBEDDING_CONTEXT_EXCEEDED,
+    );
+    assert.equal(calls, 1);
+    if (scenario === 'SDK overflow') {
+      assert.equal(result.error.status, 400);
+      assert.deepEqual(result.error.usage, usage);
+      assert.deepEqual(
+        result.error.usageCalls?.map(({ totalTokens }) => totalTokens),
+        [3],
+      );
+      assert.equal(logger.getSummary().totals.totalTokens, 3);
+      assert.equal(logger.getSummary().totals.requests, 1);
+    }
+  });
+}
+
 for (const role of ['planner', 'report'] as const) {
   test(`adaptive ${role} preserves failure usage on the agent error`, async (t) => {
     const logger = new DefaultRequestLogger();

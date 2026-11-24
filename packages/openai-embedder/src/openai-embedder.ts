@@ -5,6 +5,7 @@ import {
   type CallOptions,
   embeddingErrorCode,
   embeddingOverflowError,
+  findAbort,
   type IUsageRecorder,
   parseRetryAfter,
   RagError,
@@ -93,8 +94,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
       if (!res.ok) {
         const errorText = await res.text().catch((error) => {
           options?.signal?.throwIfAborted();
-          if (error instanceof Error && error.name === 'AbortError')
-            throw error;
+          if (findAbort(error)) throw error;
           return '';
         });
         options?.signal?.throwIfAborted();
@@ -133,19 +133,12 @@ export class OpenAiEmbedder implements IEmbedderBatch {
       });
       return { vector, usage };
     } catch (err) {
+      const aborted = options?.signal?.aborted || findAbort(err);
       request?.end({
-        outcome:
-          options?.signal?.aborted ||
-          (err instanceof Error && err.name === 'AbortError')
-            ? 'aborted'
-            : 'error',
+        outcome: aborted ? 'aborted' : 'error',
         error: err,
       });
-      if (
-        options?.signal?.aborted ||
-        (err instanceof Error && err.name === 'AbortError')
-      )
-        throw err;
+      if (aborted) throw err;
       throw embeddingOverflowError(err) ?? err;
     }
   }
@@ -189,8 +182,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
       if (!res.ok) {
         const errorText = await res.text().catch((error) => {
           options?.signal?.throwIfAborted();
-          if (error instanceof Error && error.name === 'AbortError')
-            throw error;
+          if (findAbort(error)) throw error;
           return '';
         });
         options?.signal?.throwIfAborted();
@@ -239,19 +231,12 @@ export class OpenAiEmbedder implements IEmbedderBatch {
         usage: usagePerItem,
       }));
     } catch (err) {
+      const aborted = options?.signal?.aborted || findAbort(err);
       request?.end({
-        outcome:
-          options?.signal?.aborted ||
-          (err instanceof Error && err.name === 'AbortError')
-            ? 'aborted'
-            : 'error',
+        outcome: aborted ? 'aborted' : 'error',
         error: err,
       });
-      if (
-        options?.signal?.aborted ||
-        (err instanceof Error && err.name === 'AbortError')
-      )
-        throw err;
+      if (aborted) throw err;
       throw embeddingOverflowError(err) ?? err;
     }
   }

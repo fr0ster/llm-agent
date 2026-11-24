@@ -15,7 +15,7 @@
 
 import {
   collectWithContextOverflow,
-  contextExceededError,
+  overflowError,
 } from '@mcp-abap-adt/llm-agent';
 import { hasRetrievalStrategy } from '../../retrieval/index.js';
 import type { ISpan } from '../../tracer/types.js';
@@ -41,7 +41,7 @@ export class RerankHandler implements IStageHandler {
             ctx.options,
           );
           if (!rr.ok) {
-            const terminal = contextExceededError(rr.error);
+            const terminal = overflowError(rr.error);
             if (terminal) throw terminal;
             // Behaviour unchanged (original order), but no longer silent: a
             // reranker that always fails (e.g. a stale key) must be visible.
@@ -56,8 +56,6 @@ export class RerankHandler implements IStageHandler {
         }
         return { name, results };
       }),
-      undefined,
-      { rejectImmediately: true },
     );
 
     if (!reranked.ok) throw reranked.error;

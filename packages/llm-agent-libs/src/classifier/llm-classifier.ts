@@ -9,7 +9,7 @@ import {
   addCacheTokenUsage,
   type CallOptions,
   ClassifierError,
-  contextExceededError,
+  overflowError,
   type Result,
   type Subprompt,
 } from '@mcp-abap-adt/llm-agent';
@@ -152,7 +152,7 @@ export class LlmClassifier implements ISubpromptClassifier {
         });
       }
       if (!llmResult.ok) {
-        const terminal = contextExceededError(llmResult.error);
+        const terminal = overflowError(llmResult.error);
         return {
           ok: false,
           error:
@@ -169,8 +169,7 @@ export class LlmClassifier implements ISubpromptClassifier {
       return {
         ok: false,
         error:
-          contextExceededError(err) ??
-          new ClassifierError(String(err), 'LLM_ERROR'),
+          overflowError(err) ?? new ClassifierError(String(err), 'LLM_ERROR'),
       };
     }
   }

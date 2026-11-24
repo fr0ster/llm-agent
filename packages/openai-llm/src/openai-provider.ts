@@ -15,6 +15,7 @@ import type {
 import {
   BaseLLMProvider,
   type beginLlmRequest,
+  findAbort,
   LlmError,
   type LlmRequestFacts,
   type LlmRequestHandle,
@@ -447,7 +448,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
       request?.end({
         ...facts,
         outcome: failure
-          ? options?.signal?.aborted || isAbortError(failure)
+          ? options?.signal?.aborted || findAbort(failure)
             ? 'aborted'
             : 'error'
           : completed
@@ -627,14 +628,6 @@ function tokenFacts(usage?: {
         tokensSource: 'provider',
       }
     : {};
-}
-
-function isAbortError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
-  return (
-    ('name' in error && error.name === 'AbortError') ||
-    ('code' in error && error.code === 'ERR_CANCELED')
-  );
 }
 
 /** One message as the OpenAI chat completions payload carries it. */

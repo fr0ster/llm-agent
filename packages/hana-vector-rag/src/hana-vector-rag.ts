@@ -12,7 +12,7 @@ import type {
 import {
   assertNonEmptyFilter,
   assertScanOptions,
-  contextExceededError,
+  copyErrorUsage,
   decodeIdScanCursor,
   decodeListCursor,
   embedRecord,
@@ -24,6 +24,7 @@ import {
   listMetadata,
   matchesRagIdentity,
   matchesScanFilter,
+  overflowError,
   prepareList,
   QueryEmbedding,
   RagError,
@@ -34,6 +35,7 @@ import {
   ragIdentityFilter,
   recordVectors,
   TextOnlyEmbedding,
+  toRagError,
   validateRagMetadata,
 } from '@mcp-abap-adt/llm-agent';
 import type { HanaVectorRagConfig } from './connection.js';
@@ -262,7 +264,7 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       (err.code === SHARED_LAYOUT_NOT_DEPLOYED ||
         err.code === 'HEALTH_CHECK_ERROR')
       ? err
-      : new RagError(String(err), code);
+      : copyErrorUsage(new RagError(String(err), code), err);
   }
 
   /** `failure` for `scan` / `deleteWhere`, which also pass `ABORTED` through. */
@@ -328,10 +330,16 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         })),
       };
     } catch (err) {
-      const overflow = contextExceededError(err);
+      const overflow = overflowError(err, options?.signal);
       if (overflow) return { ok: false, error: overflow };
       if (options?.signal?.aborted)
-        return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+        return {
+          ok: false,
+          error: copyErrorUsage(
+            toRagError(options.signal.reason, 'ABORTED', options.signal),
+            err,
+          ),
+        };
       if (
         err instanceof RagError &&
         (err.code !== 'ABORTED' || this.preserveQueryAbort)
@@ -544,10 +552,16 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       options?.signal?.throwIfAborted();
       return this.upsertKnown(text, vectors, metadata, options);
     } catch (err) {
-      const overflow = contextExceededError(err);
+      const overflow = overflowError(err, options?.signal);
       if (overflow) return { ok: false, error: overflow };
       if (options?.signal?.aborted)
-        return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+        return {
+          ok: false,
+          error: copyErrorUsage(
+            toRagError(options.signal.reason, 'ABORTED', options.signal),
+            err,
+          ),
+        };
       return { ok: false, error: this.failure(err, 'UPSERT_ERROR') };
     }
   }

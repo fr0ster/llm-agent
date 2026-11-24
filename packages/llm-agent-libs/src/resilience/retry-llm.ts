@@ -12,7 +12,6 @@ import type { ILlm, Message } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
   CircuitBreakerLlm,
-  contextExceededError,
   DefaultWaitStrategy,
   exponentialBackoffMs,
   findThrottled,
@@ -22,6 +21,7 @@ import {
   type LlmStreamChunk,
   type LlmTool,
   type LlmUsageAttribution,
+  overflowError,
   type Result,
   retryAfterSecondsOf,
   startOperation,
@@ -114,11 +114,11 @@ export class RetryLlm implements ILlm {
 
       const overflow = result.ok
         ? undefined
-        : contextExceededError(result.error);
+        : overflowError(result.error, signal);
       if (overflow) return { ok: false, error: overflow };
       if (signal?.aborted) return { ok: false, error: abortError(signal) };
       if (result.ok) return result;
-      const terminal = terminalRunError(result.error);
+      const terminal = terminalRunError(result.error, signal);
       if (terminal) return { ok: false, error: terminal };
       const status = httpStatusOf(result.error);
       if (this.isThrottled(result.error, status)) {
@@ -164,7 +164,7 @@ export class RetryLlm implements ILlm {
       })) {
         const overflow = chunk.ok
           ? undefined
-          : contextExceededError(chunk.error);
+          : overflowError(chunk.error, signal);
         if (signal?.aborted && !overflow && !(chunk.ok && chunk.value.reset)) {
           const usage: LlmUsageAttribution = chunk.ok
             ? { usage: chunk.value.usage, usageCalls: chunk.value.usageCalls }
@@ -180,7 +180,7 @@ export class RetryLlm implements ILlm {
           if (!chunk.value.reset) chunksYielded++;
           yield chunk;
         } else {
-          const terminal = overflow ?? terminalRunError(chunk.error);
+          const terminal = overflow ?? terminalRunError(chunk.error, signal);
           if (terminal) {
             yield {
               ok: false,

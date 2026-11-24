@@ -3,18 +3,10 @@ import {
   RagError,
   type SmartAgentError,
 } from '../interfaces/types.js';
-import { errorCauseChain, httpStatusOf } from '../llm/throttle.js';
-import {
-  abortRunError,
-  isAbortReason,
-  isTypedAbort,
-} from './abort-run-error.js';
-import { errorUsage } from './error-usage.js';
-import {
-  contextExceededError,
-  embeddingContextExceededError,
-  toRunError,
-} from './terminal-run-error.js';
+import { findAbort } from './abort-run-error.js';
+import { errorCauseChain, httpStatusOf } from './error-details.js';
+import { copyErrorUsage } from './error-usage.js';
+import { overflowError, toRunError } from './terminal-run-error.js';
 
 const inputSizeRejections = [
   /\bcontext_length_exceeded\b/i,
@@ -44,14 +36,17 @@ export function embeddingErrorCode(
 }
 
 /** Classify an input-size rejection without changing other provider errors. */
-export function embeddingOverflowError<T>(error: T): RagError | undefined {
-  const terminal = embeddingContextExceededError(error);
-  if (terminal) return toRagError(terminal, 'EMBED_ERROR');
+export function embeddingOverflowError<T>(
+  error: T,
+  signal?: AbortSignal,
+): RagError | undefined {
+  if (findAbort(error, signal)) return undefined;
+  const terminal = overflowError(error);
+  if (terminal) return asRagError(terminal, error);
   const source =
     typeof error === 'object' && error !== null ? error : undefined;
   const status = httpStatusOf(source);
   for (const current of errorCauseChain(source)) {
-    if (isTypedAbort(current)) return undefined;
     const response = 'response' in current ? current.response : undefined;
     const data =
       response && typeof response === 'object' && 'data' in response
@@ -78,12 +73,15 @@ export function embeddingOverflowError<T>(error: T): RagError | undefined {
           embeddingErrorCode(status, field) === EMBEDDING_CONTEXT_EXCEEDED,
       )
     ) {
-      return new RagError(
-        error instanceof Error
-          ? error.message
-          : 'Embedding input exceeds the context length',
-        EMBEDDING_CONTEXT_EXCEEDED,
-        { cause: error, status },
+      return copyErrorUsage(
+        new RagError(
+          error instanceof Error
+            ? error.message
+            : 'Embedding input exceeds the context length',
+          EMBEDDING_CONTEXT_EXCEEDED,
+          { cause: error, status },
+        ),
+        error,
       );
     }
   }
@@ -92,28 +90,29 @@ export function embeddingOverflowError<T>(error: T): RagError | undefined {
 
 /** Convert an SDK or custom embedder failure to a typed embedding error. */
 export function toEmbeddingError<T>(error: T, signal?: AbortSignal): RagError {
-  if (isAbortReason(error, signal)) {
-    const aborted = abortRunError(signal?.reason, error);
-    return asRagError(aborted, error);
-  }
-  if (isTypedAbort(error)) return asRagError(error, error);
-  const modelOverflow = contextExceededError(error);
-  if (modelOverflow) return toRagError(modelOverflow, 'EMBED_ERROR');
-  return embeddingOverflowError(error) ?? toRagError(error, 'EMBED_ERROR');
+  return (
+    embeddingOverflowError(error, signal) ??
+    toRagError(error, 'EMBED_ERROR', signal)
+  );
 }
 
 /** Keep provider codes and metadata across RAG Result boundaries. */
-export function toRagError<T>(error: T, fallbackCode: string): RagError {
-  return asRagError(toRunError(error, fallbackCode), error);
+export function toRagError<T>(
+  error: T,
+  fallbackCode: string,
+  signal?: AbortSignal,
+): RagError {
+  return asRagError(toRunError(error, fallbackCode, signal), error);
 }
 
 function asRagError<T>(failure: SmartAgentError, error: T): RagError {
   if (failure instanceof RagError) return failure;
-  return Object.assign(
+  return copyErrorUsage(
     new RagError(failure.message, failure.code, {
       cause: error,
       status: httpStatusOf(failure),
     }),
-    errorUsage(failure),
+    failure,
+    error,
   );
 }

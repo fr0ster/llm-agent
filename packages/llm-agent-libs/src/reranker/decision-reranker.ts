@@ -1,7 +1,7 @@
 import {
   type CallOptions,
   collectWithContextOverflow,
-  contextExceededError,
+  copyErrorUsage,
   type DecisionAnswer,
   type DecisionEntry,
   formatTrustTag,
@@ -12,6 +12,7 @@ import {
   type Result,
 } from '@mcp-abap-adt/llm-agent';
 import { assertPositiveInteger } from '../util/assert-positive-integer.js';
+import { runInterruption } from '../utils/with-abort.js';
 import type { IReranker } from './types.js';
 
 export const DECISION_RERANK_DEFAULT_TASK =
@@ -120,7 +121,6 @@ export class DecisionReranker implements IReranker {
           this.runBatch(query, results, idxs, task, criteria, options),
         ),
         (result) => (result.ok ? undefined : result.error),
-        { rejectImmediately: true },
       );
       if (!batch.ok) return batch;
       for (const res of batch.value) {
@@ -172,10 +172,13 @@ export class DecisionReranker implements IReranker {
       return {
         ok: false,
         error:
-          contextExceededError(res.error) ??
-          new RagError(
-            `decision rerank failed: ${res.error.code}: ${res.error.message}`,
-            'RERANK_ERROR',
+          runInterruption(options?.signal, [res.error]) ??
+          copyErrorUsage(
+            new RagError(
+              `decision rerank failed: ${res.error.code}: ${res.error.message}`,
+              'RERANK_ERROR',
+            ),
+            res.error,
           ),
       };
     }

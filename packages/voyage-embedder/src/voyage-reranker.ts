@@ -1,6 +1,7 @@
 import { Buffer } from 'node:buffer';
 import {
   type CallOptions,
+  findAbort,
   type IReranker,
   RagError,
   type RagResult,
@@ -84,9 +85,7 @@ export class VoyageReranker implements IReranker {
       if (error instanceof RagError && !options?.signal?.aborted) {
         return { ok: false, error };
       }
-      const aborted =
-        options?.signal?.aborted ||
-        (error instanceof Error && error.name === 'AbortError');
+      const aborted = options?.signal?.aborted || findAbort(error);
       return {
         ok: false,
         error: new RagError(

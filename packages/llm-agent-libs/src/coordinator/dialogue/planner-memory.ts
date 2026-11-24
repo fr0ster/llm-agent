@@ -5,8 +5,8 @@ import type {
   SmartAgentError,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  contextExceededError,
   embedDocumentRecords,
+  overflowError,
   scopedUsage,
   stampRagOwner,
 } from '@mcp-abap-adt/llm-agent';
@@ -148,7 +148,7 @@ export class PlannerMemoryWriter {
           }
         }
       } catch (error) {
-        const overflow = contextExceededError(error);
+        const overflow = overflowError(error);
         if (overflow) {
           this.onOverflow?.(first.entry.requestId, overflow);
           this.warn(

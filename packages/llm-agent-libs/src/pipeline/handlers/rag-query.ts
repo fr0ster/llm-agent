@@ -23,7 +23,7 @@ import { denyRagAccess, ownerBoundQuery } from '../../rag/owner-bound-query.js';
 
 import type { CallOptions } from '@mcp-abap-adt/llm-agent';
 import {
-  contextExceededError,
+  overflowError,
   QueryEmbedding,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
@@ -109,9 +109,7 @@ export class RagQueryHandler implements IStageHandler {
 
     if (!result.ok) {
       ctx.error =
-        contextExceededError(result.error) ??
-        contextExceededError(ctx.error) ??
-        result.error;
+        overflowError(result.error) ?? overflowError(ctx.error) ?? result.error;
       return false;
     }
     if (result.ok) {

@@ -8,7 +8,7 @@ import type {
   WorkerProfileSummary,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  contextExceededError,
+  overflowError,
   SmartAgentError,
   terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
@@ -110,7 +110,7 @@ export class ProfileResolver {
     } catch (error) {
       const reason = options?.signal?.reason;
       const terminal =
-        contextExceededError(reason) ??
+        overflowError(reason) ??
         terminalRunError(error) ??
         (reason instanceof SmartAgentError
           ? terminalRunError(reason)

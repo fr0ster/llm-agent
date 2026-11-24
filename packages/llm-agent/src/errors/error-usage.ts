@@ -1,4 +1,5 @@
 import type { LlmUsageAttribution } from '../interfaces/types.js';
+import { errorCauseChain } from './error-details.js';
 
 /** Read telemetry from external errors without copying their error code or cause. */
 export function errorUsage<T>(error: T): LlmUsageAttribution {
@@ -17,6 +18,33 @@ const usageErrorSources = new WeakMap<object, object>();
 
 export function originalUsageError(error: object): object {
   return usageErrorSources.get(error) ?? error;
+}
+
+/** Carry telemetry across an error boundary, preferring the first source. */
+export function copyErrorUsage<T, S, U = undefined>(
+  error: T,
+  source: S,
+  fallback?: U,
+): T {
+  const existing = errorUsage(error);
+  const attribution: LlmUsageAttribution = {};
+  for (const input of [source, fallback, error]) {
+    for (const current of errorCauseChain(input)) {
+      const usage = errorUsage(current);
+      attribution.usage ??= usage.usage;
+      attribution.usageCalls ??= usage.usageCalls;
+      attribution.usageByModel ??= usage.usageByModel;
+      attribution.model ??= usage.model;
+    }
+  }
+  if (
+    attribution.usage === existing.usage &&
+    attribution.usageCalls === existing.usageCalls &&
+    attribution.usageByModel === existing.usageByModel &&
+    attribution.model === existing.model
+  )
+    return error;
+  return withUsageAttribution(error, errorUsage(attribution));
 }
 
 /** Keep the error type and telemetry without changing a provider-owned error. */

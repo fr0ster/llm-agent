@@ -13,7 +13,7 @@ import { denyRagAccess, ownerBoundQuery } from '../../rag/owner-bound-query.js';
 
 import {
   collectWithContextOverflow,
-  contextExceededError,
+  overflowError,
   QueryEmbedding,
   TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
@@ -60,7 +60,6 @@ export class SkillSelectHandler implements IStageHandler {
           ),
         ),
         (result) => (result.ok ? undefined : result.error),
-        { rejectImmediately: true },
       );
       if (!queries.ok) {
         ctx.error = queries.error;
@@ -91,7 +90,7 @@ export class SkillSelectHandler implements IStageHandler {
 
     const allSkillsResult = await ctx.skillManager.listSkills(ctx.options);
     if (!allSkillsResult.ok) {
-      const overflow = contextExceededError(allSkillsResult.error);
+      const overflow = overflowError(allSkillsResult.error);
       if (overflow) {
         ctx.error = overflow;
         return false;
@@ -115,7 +114,7 @@ export class SkillSelectHandler implements IStageHandler {
         ctx.options,
       );
       if (!contentResult.ok) {
-        const overflow = contextExceededError(contentResult.error);
+        const overflow = overflowError(contentResult.error);
         if (overflow) {
           ctx.error = overflow;
           return false;

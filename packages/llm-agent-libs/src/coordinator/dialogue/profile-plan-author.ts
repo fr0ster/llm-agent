@@ -9,10 +9,7 @@ import type {
   PlanRevisionInput,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import {
-  contextExceededError,
-  terminalRunError,
-} from '@mcp-abap-adt/llm-agent';
+import { overflowError, terminalRunError } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import {
   PLAN_CREATE_SYSTEM,
@@ -147,7 +144,7 @@ export class ProfilePlanAuthor implements IPlanAuthor {
         options,
       );
       if (!response.ok) {
-        const overflow = contextExceededError(response.error);
+        const overflow = overflowError(response.error);
         if (overflow) throw overflow;
       }
       options?.signal?.throwIfAborted();
@@ -189,7 +186,7 @@ export class ProfilePlanAuthor implements IPlanAuthor {
         }),
       };
     } catch (error) {
-      const overflow = contextExceededError(error);
+      const overflow = overflowError(error);
       const cause = overflow ?? terminalRunError(error);
       return {
         ok: false,

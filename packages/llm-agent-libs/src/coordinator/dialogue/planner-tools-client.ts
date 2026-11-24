@@ -8,9 +8,9 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  contextExceededError,
   formatTrustTag,
   OrchestratorError,
+  overflowError,
   terminalRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
@@ -845,7 +845,7 @@ export class PlannerToolsClient implements IMcpClient {
       }
     } catch (error) {
       const scope = currentPlannerScope();
-      const overflow = contextExceededError(error);
+      const overflow = overflowError(error);
       const terminal =
         overflow ??
         (error instanceof TerminalDialogueError

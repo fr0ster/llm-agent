@@ -100,6 +100,49 @@ for (const phase of ['skill fallback', 'tool fallback', 'parallel retrieval']) {
   }
 }
 
+for (const sibling of ['fails', 'stays pending'] as const) {
+  test(`skills surface a later embedding overflow when the first store ${sibling}`, async () => {
+    const error = new RagError(
+      'Embedding input is too long',
+      EMBEDDING_CONTEXT_EXCEEDED,
+    );
+    const first = makeRag([]);
+    const second = makeRag([]);
+    let firstCalls = 0;
+    let secondCalls = 0;
+    const ready = Promise.withResolvers<void>();
+    first.query = async () => {
+      if (++firstCalls === 1) return { ok: true, value: [] };
+      if (sibling === 'fails') throw new Error('Store unavailable');
+      return new Promise<never>(() => {});
+    };
+    second.query = async () => {
+      if (++secondCalls === 1) return { ok: true, value: [] };
+      await ready.promise;
+      return { ok: false, error };
+    };
+    const { deps, llm } = makeDefaultDeps({ ragStores: { first, second } });
+    const pipeline = new DefaultPipeline();
+    pipeline.initialize({ ...deps, skillManager });
+    let observed: Error | undefined;
+    const execution = pipeline
+      .execute('work', [], testCallOptions(), () => {})
+      .then((result) => {
+        observed = result.error;
+        return result;
+      });
+    await setImmediate();
+    assert.equal(observed, undefined);
+    assert.equal(firstCalls, 2);
+    assert.equal(secondCalls, 2);
+    ready.resolve();
+    await setImmediate();
+    assert.equal(observed, error);
+    await execution;
+    assert.equal(llm.callCount, 0);
+  });
+}
+
 test('parallel stages forward an ordinary error before a later content chunk', async () => {
   const ordinary = new RagError('Aborted', 'ABORTED');
   const release = Promise.withResolvers<void>();

@@ -4,6 +4,7 @@ import {
   beginLlmRequest,
   type CallOptions,
   embeddingErrorCode,
+  findAbort,
   type IUsageRecorder,
   parseRetryAfter,
   RagError,
@@ -153,8 +154,7 @@ export class VoyageClient {
       if (!response.ok) {
         const errorBody = await response.text().catch((error) => {
           signal?.throwIfAborted();
-          if (error instanceof Error && error.name === 'AbortError')
-            throw error;
+          if (findAbort(error)) throw error;
           return '';
         });
         signal?.throwIfAborted();
@@ -179,11 +179,7 @@ export class VoyageClient {
       return result;
     } catch (error) {
       request.end({
-        outcome:
-          signal?.aborted ||
-          (error instanceof Error && error.name === 'AbortError')
-            ? 'aborted'
-            : 'error',
+        outcome: signal?.aborted || findAbort(error) ? 'aborted' : 'error',
         ...(error instanceof VoyageHttpError
           ? { errorCode: String(error.status) }
           : {}),
