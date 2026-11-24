@@ -173,6 +173,12 @@ export function errorUsage<T>(error: T): LlmUsageAttribution {
   };
 }
 
+const usageErrorSources = new WeakMap<object, object>();
+
+export function originalUsageError(error: object): object {
+  return usageErrorSources.get(error) ?? error;
+}
+
 /** Keep the error type and telemetry without changing a provider-owned error. */
 export function withUsageAttribution<T>(
   error: T,
@@ -190,13 +196,15 @@ export function withUsageAttribution<T>(
       : error instanceof Error
         ? new Error()
         : {};
-  return Object.defineProperties(
+  Object.defineProperties(
     Object.setPrototypeOf(copy, Object.getPrototypeOf(error)),
     {
       ...Object.getOwnPropertyDescriptors(error),
       ...Object.getOwnPropertyDescriptors(attribution),
     },
-  ) as T;
+  );
+  usageErrorSources.set(copy, originalUsageError(error));
+  return copy as T;
 }
 
 export function withUsageCalls<T>(

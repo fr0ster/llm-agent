@@ -6,6 +6,8 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   completeUsageCalls,
+  errorUsage,
+  mergeUsageCalls,
   withUsageCalls,
 } from '../../logger/llm-call-usage.js';
 import { observeRequestCalls } from '../../logger/request-call-scope.js';
@@ -90,8 +92,29 @@ export function meterWorkers(
           );
           throw withUsageCalls(error, calls ?? []);
         }
-        logUsage(value, trace?.traceId, Date.now() - start, observed);
-        return value;
+        const durationMs = Date.now() - start;
+        if (!value.error) {
+          logUsage(value, trace?.traceId, durationMs, observed);
+          return value;
+        }
+
+        const failure = errorUsage(value.error);
+        const calls = logUsage(
+          {
+            metadata: value.metadata,
+            model: value.model ?? failure.model,
+            usage: value.usage ?? failure.usage,
+            usageByModel: value.usage ? undefined : failure.usageByModel,
+            usageCalls:
+              value.usageCalls && failure.usageCalls
+                ? mergeUsageCalls(value.usageCalls, failure.usageCalls)
+                : (value.usageCalls ?? failure.usageCalls),
+          },
+          trace?.traceId,
+          durationMs,
+          observed,
+        );
+        return { ...value, error: withUsageCalls(value.error, calls ?? []) };
       },
     });
   }

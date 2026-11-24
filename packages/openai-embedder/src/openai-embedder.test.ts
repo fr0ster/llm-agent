@@ -44,6 +44,8 @@ describe('OpenAiEmbedder — constructor', () => {
 for (const message of [
   'context length must be a positive integer',
   'This model does not support the context window parameter',
+  'maximum context length must be a positive integer',
+  'This model does not support the maximum context length parameter',
 ]) {
   test(`OpenAI preserves the parameter error: ${message}`, async (t) => {
     t.mock.method(globalThis, 'fetch', async () =>
@@ -63,3 +65,19 @@ for (const message of [
     });
   });
 }
+
+test('OpenAI reports the requested token count exceeding the context length', async (t) => {
+  const message =
+    "This model's maximum context length is 8192 tokens. However, you requested 8193 tokens (8193 in your prompt; 0 for the completion). Please reduce your prompt; or completion length.";
+  t.mock.method(globalThis, 'fetch', async () =>
+    Response.json({ error: { message } }, { status: 400 }),
+  );
+  const embedder = new OpenAiEmbedder({
+    credential: staticApiKey('test'),
+    model: 'text-embedding-3-small',
+  });
+  await assert.rejects(embedder.embed('hello'), {
+    code: 'EMBEDDING_CONTEXT_EXCEEDED',
+    status: 400,
+  });
+});

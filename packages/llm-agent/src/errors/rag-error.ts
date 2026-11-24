@@ -8,20 +8,26 @@ import {
 
 const inputSizeRejections = [
   /\bcontext_length_exceeded\b/i,
-  /\bmaximum context length\b/i,
   /\binput(?: text)? (?:is )?too (?:long|large)\b|\btoo many tokens\b/i,
   /\bexceed(?:s|ed|ing)?\b[^.\n]*\b(?:context (?:length|window)|(?:maximum|allowed) (?:input )?(?:number of )?tokens|token limit)\b/i,
   /\b(?:context (?:length|window)|total (?:number of )?tokens|token (?:count|limit))\b[^.\n]*\bexceed(?:s|ed|ing)?\b/i,
 ];
+
+const requestedContextLength =
+  /\bmaximum context length is (\d+) tokens?\b[\s\S]*?\brequested (\d+) tokens?\b/i;
 
 /** Classify provider rejections at the embedding boundary. */
 export function embeddingErrorCode(
   status: number | undefined,
   detail: string,
 ): string {
-  return status === 413 ||
-    ((status === undefined || status === 400 || status === 422) &&
-      inputSizeRejections.some((pattern) => pattern.test(detail)))
+  if (status === 413) return EMBEDDING_CONTEXT_EXCEEDED;
+  if (status !== undefined && status !== 400 && status !== 422)
+    return 'EMBED_ERROR';
+
+  const counts = requestedContextLength.exec(detail);
+  return inputSizeRejections.some((pattern) => pattern.test(detail)) ||
+    (counts && Number(counts[2]) > Number(counts[1]))
     ? EMBEDDING_CONTEXT_EXCEEDED
     : 'EMBED_ERROR';
 }

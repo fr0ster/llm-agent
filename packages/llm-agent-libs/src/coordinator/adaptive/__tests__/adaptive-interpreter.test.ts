@@ -21,6 +21,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { DirectLlmSubAgent } from '../../../subagent/direct-llm-subagent.js';
 import {
+  AdaptiveEpicFailError,
   type AdaptiveRunInput,
   DEFAULT_BUDGET,
   runAdaptivePlan,
@@ -209,6 +210,39 @@ for (const reportedIn of ['result and error', 'result', 'error', 'throw']) {
     assert.deepEqual(result.workerUsage, [
       { worker: work.worker, usage, model: undefined },
     ]);
+  });
+}
+
+for (const code of [MODEL_CONTEXT_EXCEEDED, EMBEDDING_CONTEXT_EXCEEDED]) {
+  test(`adaptive epicfail preserves nested ${code}`, async () => {
+    const overflow = new RagError('Input exceeds context length', code, {
+      status: 400,
+    });
+    const error = new RagError('Store query failed', 'QUERY_ERROR', {
+      cause: overflow,
+    });
+    const epicFailTrace = {
+      stepId: 'nested',
+      agentName: 'worker',
+      attempts: [],
+      originalError: error.message,
+    };
+    const { input, calls, controller } = setup(
+      [work, answer],
+      [{ output: '', errorClass: 'epicfail', error, epicFailTrace }],
+    );
+    controller.report = async () => assert.fail('unexpected stop report');
+
+    const result = await runAdaptivePlan(input);
+    assert.equal(calls.length, 1);
+    assert.equal(result.outcome, 'stopped');
+    assert.ok(result.error instanceof AdaptiveEpicFailError);
+    assert.equal(result.error.code, code);
+    assert.equal(result.error.status, 400);
+    assert.equal(result.error.cause, error);
+    assert.equal(result.error.epicFailTrace, epicFailTrace);
+    assert.equal(result.error.stepId, work.id);
+    assert.equal(result.records[0]?.error, overflow.message);
   });
 }
 

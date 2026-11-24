@@ -26,6 +26,7 @@ import {
   resolveCallerIdentity,
 } from '../../policy/caller-identity.js';
 import type { ISpan } from '../../tracer/types.js';
+import { isAbortReason } from '../../utils/with-abort.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 import { terminalUsage } from './dag-coordinator.js';
@@ -188,7 +189,8 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
       }
       if (result.error) {
         ctx.error = result.error;
-        ctx.yield({ ok: false, error: result.error });
+        if (!isAbortReason(result.error, ctx.options?.signal))
+          ctx.yield({ ok: false, error: result.error });
         return false;
       }
       if (result.outcome !== 'awaiting-external')

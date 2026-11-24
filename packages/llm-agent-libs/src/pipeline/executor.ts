@@ -37,6 +37,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { normalizeMaxIterations } from '../config/normalize-max-iterations.js';
 import type { ISpan, ITracer } from '../tracer/types.js';
+import { isAbortReason } from '../utils/with-abort.js';
 import { evaluateCondition } from './condition-evaluator.js';
 import type { PipelineContext } from './context.js';
 import type { StageHandlerRegistry } from './handlers/index.js';
@@ -58,10 +59,8 @@ function stageOverflow<T>(
   error: T,
   signal: AbortSignal | undefined,
 ): SmartAgentError | undefined {
-  if (signal?.aborted && error === signal.reason) return undefined;
-  const overflow =
-    contextExceededError(error) ?? embeddingContextExceededError(error);
-  return signal?.aborted && overflow === signal.reason ? undefined : overflow;
+  if (isAbortReason(error, signal)) return undefined;
+  return contextExceededError(error) ?? embeddingContextExceededError(error);
 }
 
 export class PipelineExecutor {
@@ -176,6 +175,7 @@ export class PipelineExecutor {
     if (!stage.stages?.length) return true;
 
     const children = stage.stages;
+    const signal = ctx.options?.signal;
     const results = await new Promise<boolean[]>((resolve, reject) => {
       let overflow: SmartAgentError | undefined;
       // Let the enclosing stage report the overflow once, even for a nested parallel stage.
@@ -186,11 +186,11 @@ export class PipelineExecutor {
         }
       };
       const yieldChunk: PipelineContext['yield'] = (chunk) => {
-        const failure = chunk.ok
-          ? undefined
-          : (contextExceededError(chunk.error) ??
-            embeddingContextExceededError(chunk.error));
-        if (failure) stop(failure);
+        if (!chunk.ok) {
+          if (isAbortReason(chunk.error, signal)) return;
+          const failure = stageOverflow(chunk.error, signal);
+          if (failure) stop(failure);
+        }
         if (!overflow) ctx.yield(chunk);
       };
       const parallelCtx = new Proxy(ctx, {
@@ -201,9 +201,7 @@ export class PipelineExecutor {
         },
         set(target, key, value, receiver) {
           if (key === 'error') {
-            const failure =
-              contextExceededError(value) ??
-              embeddingContextExceededError(value);
+            const failure = stageOverflow(value, signal);
             if (failure) stop(failure);
             if (overflow) return Reflect.set(target, key, overflow, receiver);
             if (target.error) return true;

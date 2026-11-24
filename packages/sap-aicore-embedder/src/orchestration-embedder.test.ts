@@ -44,6 +44,30 @@ for (const message of [
   });
 }
 
+test('orchestration preserves an embedding context length rejection', async (t) => {
+  const rejection = Object.assign(new Error('Request failed'), {
+    response: {
+      status: 400,
+      data: {
+        error: { message: 'Input exceeds the maximum context length' },
+      },
+    },
+  });
+  t.mock.method(OrchestrationEmbeddingClient.prototype, 'embed', async () => {
+    throw rejection;
+  });
+  const embedder = new OrchestrationScenarioEmbedder({
+    model: 'text-embedding-3-small',
+    credential: { kind: 'bearer', token: async () => 'test' },
+    apiBaseUrl: 'https://api.example.com',
+  });
+  await assert.rejects(embedder.embed('hello'), {
+    code: 'EMBEDDING_CONTEXT_EXCEEDED',
+    status: 400,
+    cause: rejection,
+  });
+});
+
 test('embed(): builds a fresh destination (credential.token()) on every call, not cached at construction', async () => {
   let n = 0;
   const credential: IBearerCredential = {

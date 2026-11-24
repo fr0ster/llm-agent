@@ -21,6 +21,7 @@ import {
   toRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
+import { errorUsage } from '../../logger/llm-call-usage.js';
 import { composeStepInput } from './compose-step-input.js';
 import { parseVerdict, validateSteps } from './parse-plan.js';
 
@@ -65,13 +66,15 @@ export class AdaptiveEpicFailError extends OrchestratorError {
     readonly result: AdaptiveRunResult,
     readonly epicFailTrace?: EpicFailTrace,
     readonly stepId?: string,
-    failure?: SmartAgentError,
+    error?: SmartAgentError,
   ) {
+    const failure = error && toRunError(error, 'COORDINATOR_STEP_FAILED');
     super(
       failure?.message ?? result.stopReason ?? 'epicfail',
       failure?.code ?? 'COORDINATOR_STEP_FAILED',
-      { cause: failure, status: failure?.status },
+      { cause: error, status: failure?.status ?? error?.status },
     );
+    this.usageCalls = error?.usageCalls ?? failure?.usageCalls;
   }
 }
 
@@ -211,7 +214,10 @@ export async function runAdaptivePlan(
                 ? httpStatusOf(error)
                 : undefined),
           }),
-          { stepId: step.id, usageCalls: failure.usageCalls },
+          {
+            stepId: step.id,
+            usageCalls: errorUsage(error).usageCalls ?? failure.usageCalls,
+          },
         ),
       );
     };
@@ -305,20 +311,19 @@ export async function runAdaptivePlan(
                   : worker.model),
             });
           if (worked.errorClass === 'epicfail') {
-            record.status = 'failed';
-            record.error = worked.error?.message ?? 'epicfail';
-            finish();
-            return failedRun(
-              new AdaptiveEpicFailError(
-                {
-                  ...result('stopped', ''),
-                  stopReason: `step ${step.id} epicfail`,
-                },
-                worked.epicFailTrace,
-                step.id,
-                worked.error,
-              ),
+            const failure = new AdaptiveEpicFailError(
+              {
+                ...result('stopped', ''),
+                stopReason: `step ${step.id} epicfail`,
+              },
+              worked.epicFailTrace,
+              step.id,
+              worked.error,
             );
+            record.status = 'failed';
+            record.error = worked.error ? failure.message : 'epicfail';
+            finish();
+            return failedRun(failure);
           }
           if (worked.error) throw worked.error;
           record.output = worked.output;
