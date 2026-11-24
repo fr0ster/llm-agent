@@ -1,17 +1,16 @@
 import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import {
-  abortRunError,
   beginEmbeddingRequest,
   beginLlmRequest,
   type CallOptions,
-  embeddingErrorCode,
-  findAbort,
+  DefaultWaitStrategy,
+  EMBEDDING_CONTEXT_EXCEEDED,
   type IUsageRecorder,
-  overflowError,
   parseRetryAfter,
   RagError,
   scopedUsage,
   startOperation,
+  withProviderAttempt,
 } from '@mcp-abap-adt/llm-agent';
 
 export type VoyageInputType = 'document' | 'query';
@@ -51,6 +50,9 @@ export interface RerankEntry {
   relevance_score: number;
 }
 
+const embeddingOverflow =
+  /\b(?:context_length_exceeded|input (?:text )?(?:is )?too (?:long|large)|too many tokens|(?:tokens|token count)[^.\n]*\bexceeds? (?:the )?(?:maximum )?(?:context (?:length|window)|(?:token )?limit))\b/i;
+
 export class VoyageHttpError extends RagError {
   readonly retryAfterSeconds: number | undefined;
 
@@ -59,20 +61,32 @@ export class VoyageHttpError extends RagError {
     response: Response,
     body: string,
   ) {
+    const embedding = endpoint === 'embeddings';
+    const overflow =
+      embedding &&
+      (response.status === 400 ||
+        response.status === 413 ||
+        response.status === 422) &&
+      embeddingOverflow.test(body);
     super(
       `Voyage AI ${endpoint} error: HTTP ${response.status} - ${body}`,
-      endpoint === 'embeddings'
-        ? embeddingErrorCode(response.status, body)
-        : 'RERANK_ERROR',
-      { status: response.status },
+      overflow
+        ? EMBEDDING_CONTEXT_EXCEEDED
+        : embedding
+          ? 'EMBED_ERROR'
+          : 'RERANK_ERROR',
     );
+    this.status = response.status;
     this.headers = response.headers;
     this.retryAfterSeconds = parseRetryAfter(this.headers.get('retry-after'));
   }
 
-  declare readonly status: number;
+  readonly status: number;
   readonly headers: Headers;
 }
+
+const wait = new DefaultWaitStrategy();
+const FALLBACK_RETRY_DELAY_MS = 2_000;
 
 export class VoyageClient {
   readonly model: string;
@@ -128,76 +142,81 @@ export class VoyageClient {
         ? scopedUsage(options?.usage ?? this.usage, { role: 'rerank' })
         : undefined;
 
-    signal?.throwIfAborted();
-    const authorization = `Bearer ${await this.credential.secret()}`;
-    signal?.throwIfAborted();
-    const request =
-      endpoint === 'embeddings'
-        ? beginEmbeddingRequest(
-            options,
-            operation,
-            { ...base, inputs: texts.length },
-            this.usage,
-          )
-        : beginLlmRequest({ ...options, usage: rerankUsage }, operation, {
-            ...base,
-            stream: false,
+    for (let attempt = 0; ; attempt++) {
+      signal?.throwIfAborted();
+      const authorization = `Bearer ${await this.credential.secret()}`;
+      signal?.throwIfAborted();
+      const op = withProviderAttempt(operation, attempt);
+      const request =
+        endpoint === 'embeddings'
+          ? beginEmbeddingRequest(
+              options,
+              op,
+              { ...base, inputs: texts.length },
+              this.usage,
+            )
+          : beginLlmRequest({ ...options, usage: rerankUsage }, op, {
+              ...base,
+              stream: false,
+            });
+      try {
+        const response = await fetch(`${this.baseURL}/${endpoint}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: authorization,
+          },
+          body: json,
+          signal,
+        });
+        if (!response.ok) {
+          const errorBody = await response.text().catch((error) => {
+            signal?.throwIfAborted();
+            if (error instanceof Error && error.name === 'AbortError')
+              throw error;
+            return '';
           });
-    try {
-      const response = await fetch(`${this.baseURL}/${endpoint}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: authorization,
-        },
-        body: json,
-        signal,
-      });
-      if (!response.ok) {
-        const errorBody = await response.text().catch((error) => {
-          if (findAbort(error, signal)) throw error;
-          const overflow = overflowError(error);
-          if (overflow) throw overflow;
           signal?.throwIfAborted();
-          return '';
+          throw new VoyageHttpError(endpoint, response, errorBody);
+        }
+        const result = (await response.json()) as VoyageResponse<T>;
+        signal?.throwIfAborted();
+        if (!Array.isArray(result?.data)) {
+          throw new RagError(
+            `Invalid Voyage AI ${endpoint} response`,
+            endpoint === 'embeddings' ? 'EMBED_ERROR' : 'RERANK_ERROR',
+          );
+        }
+        const inputTokens = result.usage?.total_tokens;
+        request.end({
+          outcome: 'ok',
+          model: result.model || this.model,
+          ...(inputTokens === undefined
+            ? {}
+            : { inputTokens, tokensSource: 'provider' }),
+        });
+        return result;
+      } catch (error) {
+        request.end({
+          outcome:
+            signal?.aborted ||
+            (error instanceof Error && error.name === 'AbortError')
+              ? 'aborted'
+              : 'error',
+          ...(error instanceof VoyageHttpError
+            ? { errorCode: String(error.status) }
+            : {}),
+          error,
         });
         signal?.throwIfAborted();
-        throw new VoyageHttpError(endpoint, response, errorBody);
+        if (!(error instanceof VoyageHttpError) || error.status !== 429)
+          throw error;
+        const delay =
+          error.retryAfterSeconds === undefined
+            ? FALLBACK_RETRY_DELAY_MS
+            : Math.min(error.retryAfterSeconds * 1_000, Number.MAX_VALUE);
+        await wait.wait(delay, signal);
       }
-      const result = (await response.json()) as VoyageResponse<T>;
-      signal?.throwIfAborted();
-      if (!Array.isArray(result?.data)) {
-        throw new RagError(
-          `Invalid Voyage AI ${endpoint} response`,
-          endpoint === 'embeddings' ? 'EMBED_ERROR' : 'RERANK_ERROR',
-        );
-      }
-      const inputTokens = result.usage?.total_tokens;
-      request.end({
-        outcome: 'ok',
-        model: result.model || this.model,
-        ...(inputTokens === undefined
-          ? {}
-          : { inputTokens, tokensSource: 'provider' }),
-      });
-      return result;
-    } catch (error) {
-      request.end({
-        outcome: signal?.aborted || findAbort(error) ? 'aborted' : 'error',
-        ...(error instanceof VoyageHttpError
-          ? { errorCode: String(error.status) }
-          : {}),
-        error,
-      });
-      if (
-        signal?.aborted &&
-        !findAbort(error, signal) &&
-        !overflowError(error)
-      ) {
-        if (endpoint === 'rerank') throw abortRunError(signal.reason, error);
-        signal.throwIfAborted();
-      }
-      throw error;
     }
   }
 }

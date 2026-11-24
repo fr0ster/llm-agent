@@ -5,10 +5,7 @@ import type {
   KnowledgeEntry,
   KnowledgeFilter,
 } from '@mcp-abap-adt/llm-agent';
-import {
-  EMBEDDING_CONTEXT_EXCEEDED,
-  symmetricEmbedder,
-} from '@mcp-abap-adt/llm-agent';
+import { symmetricEmbedder } from '@mcp-abap-adt/llm-agent';
 import {
   relevantExtract,
   runScopedRecall,
@@ -285,25 +282,6 @@ describe('runScopedRecall', () => {
 });
 
 describe('relevantExtract', () => {
-  it('normalizes SDK errors from document windows', async () => {
-    const cause = Object.assign(new Error('input too long'), { status: 400 });
-    let calls = 0;
-    await assert.rejects(
-      () =>
-        relevantExtract('content for recall', 'reference', 6, {
-          async embedQuery() {
-            return { vector: [1, 0] };
-          },
-          async embedDocument() {
-            calls++;
-            throw cause;
-          },
-        }),
-      { code: EMBEDDING_CONTEXT_EXCEEDED, cause },
-    );
-    assert.equal(calls, 1);
-  });
-
   // Stub embedder: BOTH the ref ("...reference") and any window containing MARK map
   // to the SAME vector [1,0]; everything else is orthogonal [0,1]. So cosine(ref,
   // MARK-window) = 1 and cosine(ref, plain-window) = 0 — the EMBEDDING (not lexical

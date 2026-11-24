@@ -414,7 +414,7 @@ export class SmartExecutorPlanner implements IControllerPlanner {
       );
       logUsage?.('finalizer', res.usage);
       if (res.kind === 'error') {
-        const terminal = res.abort ?? res.contextOverflow;
+        const terminal = res.contextOverflow;
         if (terminal) throw terminal;
       }
       // Finalizer must produce content; an error or tool_call is NOT a successful
@@ -470,7 +470,7 @@ export class SmartExecutorPlanner implements IControllerPlanner {
     );
     logUsage?.('planner', res.usage);
     if (res.kind === 'error') {
-      const terminal = res.abort ?? res.contextOverflow;
+      const terminal = res.contextOverflow;
       if (terminal) throw terminal;
     }
     if (res.kind !== 'content') return null;

@@ -8,11 +8,8 @@ import type {
   SkillsEmbeddingDescriptor,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  findAbort,
-  overflowError,
+  contextExceededError,
   SkillsIncompatibleError,
-  toAbortError,
-  withEmbeddingError,
 } from '@mcp-abap-adt/llm-agent'; // value (class)
 
 export interface CompatibleSkillsRagDeps {
@@ -42,14 +39,10 @@ export function makeCompatibleSkillsRag(
 
   async function ensureDimension(options?: CallOptions): Promise<void> {
     if (dimension === undefined) {
-      const probe = await withEmbeddingError(
-        () =>
-          deps.embedder.embedQuery('dimension probe', {
-            ...options,
-            usage: options?.usage?.with({ role: 'embedding' }),
-          }),
-        options?.signal,
-      );
+      const probe = await deps.embedder.embedQuery('dimension probe', {
+        ...options,
+        usage: options?.usage?.with({ role: 'embedding' }),
+      });
       dimension = probe.vector.length;
     }
   }
@@ -100,25 +93,20 @@ export function makeCompatibleSkillsRag(
       await ensureDimension(options);
       const snap = await deps.backend.activeSnapshot(); // ONCE — pins the generation (lease)
       if (!snap) return [];
-      let deadline: AbortSignal | undefined;
       try {
         if (!compatible(snap)) return []; // no embed on incompatible
-        const { vector } = await withEmbeddingError(
-          () =>
-            deps.embedder.embedQuery(text, {
-              ...options,
-              usage: options?.usage?.with({ role: 'embedding' }),
-            }),
-          options?.signal,
-        ); // PAID step, last
+        const { vector } = await deps.embedder.embedQuery(text, {
+          ...options,
+          usage: options?.usage?.with({ role: 'embedding' }),
+        }); // PAID step, last
         // Bound the vector read with a DEADLINE so it cannot outlive a time-grace backend's
         // retention window (P1.4). For the exact-lease backend recallTimeoutMs is omitted.
-        deadline = deps.recallTimeoutMs
-          ? AbortSignal.timeout(deps.recallTimeoutMs)
-          : undefined;
-        const sigs = [options?.signal, deadline].filter(
-          (signal) => signal !== undefined,
-        );
+        const sigs = [
+          options?.signal,
+          deps.recallTimeoutMs
+            ? AbortSignal.timeout(deps.recallTimeoutMs)
+            : undefined,
+        ].filter(Boolean) as AbortSignal[];
         const signal = sigs.length ? AbortSignal.any(sigs) : undefined;
         const hits = await deps.backend.queryRevision(
           snap.revision,
@@ -129,18 +117,10 @@ export function makeCompatibleSkillsRag(
         const threshold = opts.threshold ?? 0.3;
         return hits.filter((h) => h.score >= threshold);
       } catch (e) {
-        if (
-          !options?.signal?.aborted &&
-          deadline?.aborted &&
-          findAbort(e, deadline)
-        )
-          return []; // Local retention deadline.
-        const aborted = toAbortError(e, options?.signal);
-        if (aborted) throw aborted;
-        const overflow = overflowError(e);
+        const overflow = contextExceededError(e);
         if (overflow) throw overflow;
         const n = (e as Error)?.name;
-        if (n === 'TimeoutError') return []; // deadline hit → empty, no crash
+        if (n === 'AbortError' || n === 'TimeoutError') return []; // deadline hit → empty, no crash
         throw e;
       } finally {
         deps.backend.release?.(snap.revision); // EXACT retention: release the lease

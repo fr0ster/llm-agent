@@ -1,14 +1,12 @@
 import {
-  OrchestratorError,
+  contextExceededError,
   RagAccessDeniedError,
-  toRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { normalizeLoopLimit } from '../config/normalize-max-iterations.js';
 import {
   readCallerResolution,
   withResolvedCaller,
 } from '../policy/caller-identity.js';
-import { runInterruption } from '../utils/with-abort.js';
 /**
  * DefaultPipeline — IPipeline implementation backed by PipelineExecutor + stage handlers.
  *
@@ -52,7 +50,11 @@ import {
   NoopToolCache,
   StreamingLlmCallStrategy,
 } from '@mcp-abap-adt/llm-agent';
-import type { SmartAgentConfig, SmartAgentRagStores } from '../agent.js';
+import type {
+  OrchestratorError,
+  SmartAgentConfig,
+  SmartAgentRagStores,
+} from '../agent.js';
 import { LlmClassifier } from '../classifier/llm-classifier.js';
 import { ContextAssembler } from '../context/context-assembler.js';
 import { ExplicitActivation } from '../coordinator/activation/explicit.js';
@@ -313,18 +315,12 @@ export class DefaultPipeline implements IPipeline {
     );
 
     try {
-      const ok = await this.executor.executeStages(this.stages, ctx, rootSpan);
-      if (!ok)
-        ctx.error ??= new OrchestratorError(
-          'Pipeline execution failed.',
-          'PIPELINE_ERROR',
-        );
+      await this.executor.executeStages(this.stages, ctx, rootSpan);
     } catch (err) {
-      ctx.error =
-        runInterruption(options.signal, [err]) ??
-        toRunError(err, 'PIPELINE_ERROR');
+      const overflow = contextExceededError(err);
+      if (overflow) ctx.error = overflow;
+      rootSpan.setStatus('error', String(err));
     } finally {
-      if (ctx.error) rootSpan.setStatus('error', ctx.error.message);
       rootSpan.end();
     }
 

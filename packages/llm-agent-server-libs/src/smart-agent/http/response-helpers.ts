@@ -9,8 +9,8 @@
 
 import type { IncomingMessage } from 'node:http';
 import {
+  contextExceededError,
   type ExternalToolValidationCode,
-  overflowError,
 } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent, StopReason } from '@mcp-abap-adt/llm-agent-libs';
 
@@ -88,7 +88,7 @@ export async function* streamWithContextOverflow(
   try {
     yield* stream;
   } catch (error) {
-    const overflow = overflowError(error);
+    const overflow = contextExceededError(error);
     if (!overflow) throw error;
     yield { ok: false, error: overflow };
   }

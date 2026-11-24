@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { AgentStreamChunk, Message } from '@mcp-abap-adt/llm-agent';
-import { LlmError, MODEL_CONTEXT_EXCEEDED } from '@mcp-abap-adt/llm-agent';
+import { LlmError } from '@mcp-abap-adt/llm-agent';
 import type { BaseAgentLlmBridge } from '../llm-adapter.js';
 import { LlmAdapter } from '../llm-adapter.js';
 
@@ -288,35 +288,4 @@ describe('LlmAdapter — healthCheck', () => {
     const r = await adapter.healthCheck();
     assert.ok(!r.ok);
   });
-});
-
-it('keeps LLM_ERROR for an ordinary bridge failure and preserves interruptions', async () => {
-  const usage = { promptTokens: 4, completionTokens: 0, totalTokens: 4 };
-  const ordinary = Object.assign(new Error('Network unavailable'), { usage });
-  const overflow = Object.assign(
-    new LlmError('Context is full', MODEL_CONTEXT_EXCEEDED),
-    { usage },
-  );
-  const abort = Object.assign(new Error('Cancelled', { cause: overflow }), {
-    name: 'AbortError',
-  });
-  for (const [error, code] of [
-    [ordinary, 'LLM_ERROR'],
-    [
-      new Error('Provider wrapper', { cause: overflow }),
-      MODEL_CONTEXT_EXCEEDED,
-    ],
-    [abort, 'ABORTED'],
-  ] as const) {
-    const adapter = new LlmAdapter(new StubBridge({ content: '' }, error));
-    const response = await adapter.chat([USER]);
-    assert.ok(!response.ok);
-    assert.equal(response.error.code, code);
-    assert.deepEqual(response.error.usage, usage);
-    for await (const chunk of adapter.streamChat([USER])) {
-      assert.ok(!chunk.ok);
-      assert.equal(chunk.error.code, code);
-      assert.deepEqual(chunk.error.usage, usage);
-    }
-  }
 });

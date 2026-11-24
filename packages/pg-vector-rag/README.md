@@ -56,10 +56,12 @@ not declare their capacity (default 2,048 Unicode code points).
 
 ## Minimal config
 
-A caller-supplied query embedding failure is returned as a failed `Result`.
-The `fallbackOnQueryEmbeddingError` option is deprecated. An explicit
-`TextOnlyEmbedding` uses the store embedder once. Successful caller embeddings
-are reused.
+`PgVectorRagConfig.fallbackOnQueryEmbeddingError?: boolean` defaults to `true`:
+if a caller-supplied query embedding rejects, the store tries its own embedder.
+Set `fallbackOnQueryEmbeddingError: false` in `new PgVectorRag({ ... })` to return
+the first failure as a failed `Result` without a second embedder call.
+An explicit `TextOnlyEmbedding` is always embedded once by the store, and its
+failure is returned without retrying. Successful caller embeddings are reused.
 
 ```yaml
 # the address only; the login is a credential

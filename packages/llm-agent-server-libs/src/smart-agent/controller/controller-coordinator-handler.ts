@@ -1,7 +1,7 @@
 import {
   type CallOptions,
+  contextExceededError,
   DefaultWaitStrategy,
-  EMBEDDING_CONTEXT_EXCEEDED,
   externalToolCallId,
   type IKnowledgeRagHandle,
   type IRetrievalEmbedder,
@@ -20,11 +20,9 @@ import {
   MODEL_CONTEXT_EXCEEDED,
   type ModelUsageEntry,
   mergeOfferedTools,
-  overflowError,
   SmartAgentError,
   type StepRoundState,
   type ToolLoopContextStrategyFactory,
-  toAbortError,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -324,14 +322,9 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         terminalTtlMs,
       );
     } catch (error) {
-      const terminal =
-        toAbortError(error, ctx.options?.signal) ?? overflowError(error);
+      const terminal = contextExceededError(error);
       if (!terminal) throw error;
-      if (
-        bundle.runId &&
-        bundle.runState !== 'terminal' &&
-        !(terminal.code === 'ABORTED' && ctx.options?.signal?.aborted)
-      ) {
+      if (bundle.runId && bundle.runState !== 'terminal') {
         await this.commitTerminalError(
           ctx.sessionId,
           bundle,
@@ -1494,7 +1487,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             signal: callSignal,
           });
         } catch (e) {
-          const overflow = overflowError(e);
+          const overflow = contextExceededError(e);
           if (overflow) throw overflow;
           if (budget.signal.aborted) return cutControlFailure('step-timeout');
           throw e;
@@ -1603,7 +1596,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         }
 
         if (res.kind === 'error') {
-          const terminal = res.abort ?? res.contextOverflow;
+          const terminal = res.contextOverflow;
           if (terminal) throw terminal;
           retries++;
           if (retries <= cfg.maxRetries) {
@@ -1812,8 +1805,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             usage: ctx.options?.usage?.with({ role: 'executor' }),
           });
         } catch (mcpErr) {
-          const terminal =
-            toAbortError(mcpErr, ctx.options?.signal) ?? overflowError(mcpErr);
+          const terminal = contextExceededError(mcpErr);
           if (terminal) throw terminal;
           ctx.options?.sessionLogger?.logStep(
             'mcp_tool_call',
@@ -2065,10 +2057,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     );
     bundle.pending = undefined;
     bundle.inFlightStep = undefined;
-    if (
-      outcome.code === MODEL_CONTEXT_EXCEEDED ||
-      outcome.code === EMBEDDING_CONTEXT_EXCEEDED
-    ) {
+    if (outcome.code === MODEL_CONTEXT_EXCEEDED) {
       bundle.evalCallInFlight = false;
       bundle.plannerCallInFlight = false;
     }
@@ -2209,8 +2198,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           }
           answer = composed;
         } catch (e) {
-          const terminal =
-            toAbortError(e, ctx.options?.signal) ?? overflowError(e);
+          const terminal = contextExceededError(e);
           if (terminal) throw terminal;
           bundle.finalizeAttempt = (bundle.finalizeAttempt ?? 0) + 1;
           await persistBundle(deps.backend, sessionId, bundle);
@@ -2320,12 +2308,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     outcome: TerminalOutcome,
     usage: TerminalUsage,
   ): boolean {
-    if (
-      outcome.kind === 'error' &&
-      (outcome.code === 'ABORTED' ||
-        outcome.code === MODEL_CONTEXT_EXCEEDED ||
-        outcome.code === EMBEDDING_CONTEXT_EXCEEDED)
-    ) {
+    if (outcome.kind === 'error' && outcome.code === MODEL_CONTEXT_EXCEEDED) {
       return this.surfaceRunError(
         ctx,
         new SmartAgentError(outcome.error, outcome.code),

@@ -5,11 +5,11 @@
 import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
+  contextExceededError,
   type McpContentBlock,
   McpError,
   type McpTool,
   type McpToolResult,
-  overflowError,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
 import type { MCPClientWrapper } from './client.js';
@@ -50,7 +50,7 @@ export class McpClientAdapter implements IMcpClient {
       this.toolsCache = tools;
       return { ok: true, value: tools };
     } catch (err) {
-      return { ok: false, error: toMcpError(err, options?.signal) };
+      return { ok: false, error: contextExceededError(err) ?? toMcpError(err) };
     }
   }
 
@@ -70,7 +70,7 @@ export class McpClientAdapter implements IMcpClient {
       return { ok: true, value: true };
     } catch (err) {
       this.lastHealthy = false;
-      return { ok: false, error: toMcpError(err, options?.signal) };
+      return { ok: false, error: contextExceededError(err) ?? toMcpError(err) };
     }
   }
 
@@ -105,11 +105,8 @@ export class McpClientAdapter implements IMcpClient {
       // out" / "forbidden" message is domain feedback, not an MCP outage; only the
       // THROWN transport path (catch below) treats those as unavailable.
       if (result.error !== undefined && result.error !== null) {
-        const overflow = overflowError(result.error, options?.signal);
-        if (overflow) return { ok: false, error: overflow };
-        const mapped = toMcpError(result.error, options?.signal);
+        const mapped = toMcpError(result.error);
         if (
-          mapped.code === 'ABORTED' ||
           mapped.code === 'MCP_NOT_CONNECTED' ||
           mapped.code === 'MCP_NO_RESPONSE'
         )
@@ -136,7 +133,7 @@ export class McpClientAdapter implements IMcpClient {
         },
       };
     } catch (err) {
-      return { ok: false, error: toMcpError(err, options?.signal) };
+      return { ok: false, error: contextExceededError(err) ?? toMcpError(err) };
     }
   }
 }

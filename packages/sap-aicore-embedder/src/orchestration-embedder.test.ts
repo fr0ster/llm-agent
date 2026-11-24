@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
+import {
+  EMBEDDING_CONTEXT_EXCEEDED,
+  terminalRunError,
+} from '@mcp-abap-adt/llm-agent';
 import { OrchestrationEmbeddingClient } from '@sap-ai-sdk/orchestration';
 import { OrchestrationScenarioEmbedder } from './orchestration-embedder.js';
 
@@ -20,58 +24,6 @@ import { OrchestrationScenarioEmbedder } from './orchestration-embedder.js';
 
 const fakeEmbedResponse = () => ({
   getEmbeddings: () => [{ embedding: [0], index: 0 }],
-});
-
-for (const [status, message] of [
-  [400, 'context length must be a positive integer'],
-  [400, 'This model does not support the context window parameter'],
-  [401, 'Unauthorized'],
-  [429, 'Rate limited'],
-  [500, 'Upstream rejected request'],
-] as const) {
-  test(`orchestration preserves the SDK error for HTTP ${status}: ${message}`, async (t) => {
-    const rejection = Object.assign(new Error('Request failed'), {
-      response: { status, data: { error: { message } } },
-    });
-    t.mock.method(OrchestrationEmbeddingClient.prototype, 'embed', async () => {
-      throw rejection;
-    });
-    const embedder = new OrchestrationScenarioEmbedder({
-      model: 'text-embedding-3-small',
-      credential: { kind: 'bearer', token: async () => 'test' },
-      apiBaseUrl: 'https://api.example.com',
-    });
-    const expected = (error: Error) => error === rejection;
-    await assert.rejects(embedder.embed('hello'), expected);
-    await assert.rejects(embedder.embedBatch(['hello', 'world']), expected);
-    assert.equal('code' in rejection, false);
-  });
-}
-
-test('orchestration preserves an embedding context length rejection', async (t) => {
-  const rejection = Object.assign(new Error('Request failed'), {
-    response: {
-      status: 400,
-      data: {
-        error: { message: 'Input exceeds the maximum context length' },
-      },
-    },
-  });
-  t.mock.method(OrchestrationEmbeddingClient.prototype, 'embed', async () => {
-    throw rejection;
-  });
-  const embedder = new OrchestrationScenarioEmbedder({
-    model: 'text-embedding-3-small',
-    credential: { kind: 'bearer', token: async () => 'test' },
-    apiBaseUrl: 'https://api.example.com',
-  });
-  const expected = {
-    code: 'EMBEDDING_CONTEXT_EXCEEDED',
-    status: 400,
-    cause: rejection,
-  };
-  await assert.rejects(embedder.embed('hello'), expected);
-  await assert.rejects(embedder.embedBatch(['hello', 'world']), expected);
 });
 
 test('embed(): builds a fresh destination (credential.token()) on every call, not cached at construction', async () => {
@@ -145,3 +97,51 @@ test('embedBatch(): builds a fresh destination on every call', async () => {
 
   assert.deepEqual(seenAuth, ['Bearer b1', 'Bearer b2']);
 });
+
+for (const [status, message, overflow] of [
+  [400, 'context length must be a positive integer', false],
+  [401, 'Unauthorized', false],
+  [429, 'Rate limited', false],
+  [500, 'Service failure', false],
+  [400, 'Input exceeds the maximum context length', true],
+] as const) {
+  test(`orchestration preserves SDK error details for HTTP ${status}: ${message}`, async (t) => {
+    const cause = Object.assign(new Error('Upstream failure'), {
+      response: { status, data: { error: { message } } },
+    });
+    const rejection = Object.assign(new Error('Request failed', { cause }), {
+      code: 'SDK_ERROR',
+    });
+    t.mock.method(OrchestrationEmbeddingClient.prototype, 'embed', async () => {
+      throw rejection;
+    });
+    const embedder = new OrchestrationScenarioEmbedder({
+      model: 'text-embedding-3-small',
+      credential: { kind: 'bearer', token: async () => 'fixture' },
+      apiBaseUrl: 'https://api.example.com',
+    });
+    for (const run of [
+      () => embedder.embed('hello'),
+      () => embedder.embedBatch(['hello', 'world']),
+    ]) {
+      await assert.rejects(run, (error) => {
+        if (overflow) {
+          assert.ok(error instanceof Error);
+          assert.partialDeepStrictEqual(
+            { ...error, message: error.message },
+            {
+              code: EMBEDDING_CONTEXT_EXCEEDED,
+              message: rejection.message,
+              status,
+            },
+          );
+          assert.equal(error.cause, rejection);
+          assert.equal(terminalRunError(error), error);
+        } else {
+          assert.equal(error, rejection);
+        }
+        return true;
+      });
+    }
+  });
+}

@@ -8,11 +8,7 @@ import type {
   PlanStep,
   StepResult,
 } from '@mcp-abap-adt/llm-agent';
-import {
-  addCacheTokenUsage,
-  errorUsage,
-  terminalRunError,
-} from '@mcp-abap-adt/llm-agent';
+import { addCacheTokenUsage, terminalRunError } from '@mcp-abap-adt/llm-agent';
 import { normalizeLoopLimit } from '../../config/normalize-max-iterations.js';
 import { ToolResponseRound } from '../../pipeline/handlers/tool-response-round.js';
 import { llmOutputTruncation } from '../llm-output-truncation.js';
@@ -109,18 +105,14 @@ export class SelfDispatch implements IDispatchStrategy {
           : {}),
       };
     } catch (err) {
-      const terminalError = terminalRunError(err, ctx.signal);
-      const { usage } = errorUsage(err);
+      const terminalError = terminalRunError(err);
       return {
         stepId: step.id,
         output: '',
         durationMs: Date.now() - started,
         ok: false,
-        error:
-          terminalError?.message ??
-          (err instanceof Error ? err.message : String(err)),
+        error: err instanceof Error ? err.message : String(err),
         ...(terminalError ? { terminalError } : {}),
-        ...(usage ? { usage } : {}),
       };
     }
   }

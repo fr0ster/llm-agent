@@ -15,16 +15,12 @@ import type {
 import {
   BaseLLMProvider,
   type beginLlmRequest,
-  copyErrorUsage,
-  findAbort,
   LlmError,
   type LlmRequestFacts,
   type LlmRequestHandle,
   MODEL_CONTEXT_EXCEEDED,
-  overflowError,
   requestShape,
   startOperation,
-  toAbortError,
 } from '@mcp-abap-adt/llm-agent';
 import axios, { type AxiosInstance } from 'axios';
 
@@ -252,12 +248,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
 
       return response;
     } catch (error) {
-      throw this.requestError(
-        error,
-        false,
-        options?.apiKey !== undefined,
-        options?.signal,
-      );
+      throw this.requestError(error, false, options?.apiKey !== undefined);
     }
   }
 
@@ -450,14 +441,13 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         error,
         true,
         options?.apiKey !== undefined,
-        options?.signal,
         streamedBody,
       );
     } finally {
       request?.end({
         ...facts,
         outcome: failure
-          ? options?.signal?.aborted || findAbort(failure)
+          ? options?.signal?.aborted || isAbortError(failure)
             ? 'aborted'
             : 'error'
           : completed
@@ -475,12 +465,10 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
     error: T,
     streaming: boolean,
     redact: boolean,
-    signal?: AbortSignal,
     streamedBody?: OpenAIErrorResponse,
   ): Error {
     const operation = streaming ? (redact ? 'streaming' : 'Streaming') : 'API';
     const prefix = `${this.providerName} ${operation} error`;
-    const interruption = toAbortError(error, signal) ?? overflowError(error);
     const transport = axios.isAxiosError<OpenAIErrorResponse | Readable>(error)
       ? error
       : undefined;
@@ -502,16 +490,10 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         (error instanceof Error ? error.message : String(error));
       message = `${prefix}: ${providerMessage || detail}`;
     }
-    if (interruption || overflow) {
-      const failure = new LlmError(
-        message,
-        interruption?.code ?? MODEL_CONTEXT_EXCEEDED,
-      );
-      const status =
-        interruption?.status ??
-        (failure.code === MODEL_CONTEXT_EXCEEDED ? 400 : undefined);
-      if (status !== undefined) Object.assign(failure, { status });
-      return copyErrorUsage(failure, error, interruption);
+    if (overflow) {
+      return Object.assign(new LlmError(message, MODEL_CONTEXT_EXCEEDED), {
+        status: 400,
+      });
     }
     return redact
       ? this.credentialSafeError(error, prefix)
@@ -645,6 +627,14 @@ function tokenFacts(usage?: {
         tokensSource: 'provider',
       }
     : {};
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  return (
+    ('name' in error && error.name === 'AbortError') ||
+    ('code' in error && error.code === 'ERR_CANCELED')
+  );
 }
 
 /** One message as the OpenAI chat completions payload carries it. */

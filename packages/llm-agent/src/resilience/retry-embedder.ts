@@ -8,9 +8,7 @@
  * batch-capable to isBatchEmbedder.
  */
 
-import { findAbort } from '../errors/abort-run-error.js';
-import { withEmbeddingError } from '../errors/rag-error.js';
-import { overflowError } from '../errors/terminal-run-error.js';
+import { contextExceededError } from '../errors/terminal-run-error.js';
 import type {
   IEmbedder,
   IEmbedderBatch,
@@ -140,18 +138,12 @@ export class RetryEmbedder implements IEmbedder {
         async () => {
           options?.signal?.throwIfAborted();
           try {
-            return await withEmbeddingError(
-              () =>
-                call({
-                  ...options,
-                  usageOp: withOuterAttempt(op, physicalAttempt++),
-                }),
-              options?.signal,
-              'preserve-rejection',
-            );
+            return await call({
+              ...options,
+              usageOp: withOuterAttempt(op, physicalAttempt++),
+            });
           } catch (error) {
-            if (findAbort(error, options?.signal) || overflowError(error))
-              throw error;
+            if (contextExceededError(error)) throw error;
             // The ordinary retry loop reaches its abort check after a retryable
             // failure with attempts left. Keep that outcome and the caller reason.
             if (
@@ -191,17 +183,12 @@ export class RetryEmbedder implements IEmbedder {
         throw new RagError('Aborted', 'ABORTED');
       }
       try {
-        return await withEmbeddingError(
-          () =>
-            call({
-              ...options,
-              usageOp: withOuterAttempt(op, attempt),
-            }),
-          options?.signal,
-          'preserve-rejection',
-        );
+        return await call({
+          ...options,
+          usageOp: withOuterAttempt(op, attempt),
+        });
       } catch (err) {
-        if (findAbort(err, options?.signal) || overflowError(err)) throw err;
+        if (contextExceededError(err)) throw err;
         // The store waits out 429s for record fragments when no explicit
         // throttle strategy handled the request.
         if (

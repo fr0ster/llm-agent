@@ -5,12 +5,8 @@ import type { CallOptions, TokenUsage } from './types.js';
 import { SmartAgentError } from './types.js';
 
 export class OrchestratorError extends SmartAgentError {
-  constructor(
-    message: string,
-    code = 'ORCHESTRATOR_ERROR',
-    options?: ConstructorParameters<typeof SmartAgentError>[2],
-  ) {
-    super(message, code, options);
+  constructor(message: string, code = 'ORCHESTRATOR_ERROR') {
+    super(message, code);
     this.name = 'OrchestratorError';
   }
 }

@@ -5,10 +5,9 @@ import type {
   Message,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  overflowError,
+  contextExceededError,
   recordToolInvocation,
   scopedUsage,
-  toAbortError,
 } from '@mcp-abap-adt/llm-agent';
 import type { IMetrics } from '../metrics/types.js';
 import {
@@ -108,9 +107,7 @@ export function fireInternalToolsAsync(
           }),
         );
         if (!res.ok) {
-          const terminal =
-            toAbortError(res.error, ctx.options?.signal) ??
-            overflowError(res.error);
+          const terminal = contextExceededError(res.error);
           if (terminal) throw terminal;
         }
         const text = !res.ok
@@ -131,8 +128,7 @@ export function fireInternalToolsAsync(
         );
         return { toolCallId: tc.id, toolName: tc.name, text };
       } catch (err) {
-        const terminal =
-          toAbortError(err, ctx.options?.signal) ?? overflowError(err);
+        const terminal = contextExceededError(err);
         if (terminal) throw terminal;
         return {
           toolCallId: tc.id,

@@ -4,11 +4,7 @@ import type {
   KnowledgeEntry,
   KnowledgeFilter,
 } from '@mcp-abap-adt/llm-agent';
-import {
-  bestFragmentScore,
-  embedRecord,
-  withEmbeddingError,
-} from '@mcp-abap-adt/llm-agent';
+import { bestFragmentScore, embedRecord } from '@mcp-abap-adt/llm-agent';
 import { matchesKnowledgeFilter } from '@mcp-abap-adt/llm-agent-libs';
 
 interface Indexed {
@@ -86,10 +82,7 @@ export function makeKnowledgeSemanticIndex(
       const scoped = filter
         ? all.filter((x) => matchesKnowledgeFilter(x.entry.metadata, filter))
         : all; // PRE-cap
-      const { vector: q } = await withEmbeddingError(
-        () => embedder.embedQuery(text, options),
-        options?.signal,
-      );
+      const { vector: q } = await embedder.embedQuery(text, options);
       const ranked = scoped
         .map((x) => ({
           e: x.entry,

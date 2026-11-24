@@ -3,7 +3,6 @@ import {
   collectWithContextOverflow,
   type IQueryEmbedder,
   type LlmUsage,
-  withEmbeddingError,
 } from '@mcp-abap-adt/llm-agent';
 import { appendHint } from './prompts.js';
 import {
@@ -73,7 +72,7 @@ export async function establishTargetState(
     diagnosticCallOptions(options, 'evaluator'),
   );
   if (r.kind === 'error') {
-    const terminal = r.abort ?? r.contextOverflow;
+    const terminal = r.contextOverflow;
     if (terminal) throw terminal;
   }
   const target = r.kind === 'content' ? r.content : '';
@@ -94,14 +93,11 @@ export async function establishTargetState(
         `target-state strategy '${cfg.strategy}' requires an embedder; configure rag.embedder or use strategy: consumer-confirm`,
       );
     }
-    const embedder = deps.embedder;
     const embeddings = await collectWithContextOverflow(
-      [target, prompt].map((text) =>
-        withEmbeddingError(
-          () => embedder.embedQuery(text, options),
-          options?.signal,
-        ),
-      ),
+      [
+        deps.embedder.embedQuery(target, options),
+        deps.embedder.embedQuery(prompt, options),
+      ],
       undefined,
       { rejectImmediately: true },
     );

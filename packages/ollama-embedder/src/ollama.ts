@@ -3,9 +3,7 @@ import {
   beginEmbeddingRequest,
   type CallOptions,
   composeResilientEmbedder,
-  embeddingErrorCode,
-  embeddingOverflowError,
-  findAbort,
+  EMBEDDING_CONTEXT_EXCEEDED,
   type IUsageRecorder,
   parseRetryAfter,
   RagError,
@@ -109,16 +107,22 @@ export class OllamaEmbedder implements IEmbedderBatch {
   ): Promise<RagError> {
     const body = await response.text().catch((error) => {
       options?.signal?.throwIfAborted();
-      if (findAbort(error)) throw error;
+      if (error instanceof Error && error.name === 'AbortError') throw error;
       return '';
     });
     options?.signal?.throwIfAborted();
+    const overflow =
+      action !== 'model info' &&
+      (response.status === 400 ||
+        response.status === 413 ||
+        response.status === 422) &&
+      /\b(?:context_length_exceeded|input (?:text )?(?:is )?too (?:long|large)|input (?:length )?exceeds (?:the )?(?:maximum )?context (?:length|window)|too many tokens)\b/i.test(
+        body,
+      );
     return Object.assign(
       new RagError(
         `Ollama ${action} error: HTTP ${response.status} - ${body}`,
-        action === 'model info'
-          ? 'EMBED_ERROR'
-          : embeddingErrorCode(response.status, body),
+        overflow ? EMBEDDING_CONTEXT_EXCEEDED : 'EMBED_ERROR',
       ),
       {
         status: response.status,
@@ -209,13 +213,15 @@ export class OllamaEmbedder implements IEmbedderBatch {
       });
       return result;
     } catch (err) {
-      const aborted = options?.signal?.aborted || findAbort(err);
       request.end({
-        outcome: aborted ? 'aborted' : 'error',
+        outcome:
+          options?.signal?.aborted ||
+          (err instanceof Error && err.name === 'AbortError')
+            ? 'aborted'
+            : 'error',
         error: err,
       });
-      if (aborted) throw err;
-      throw embeddingOverflowError(err) ?? err;
+      throw err;
     }
   }
 }

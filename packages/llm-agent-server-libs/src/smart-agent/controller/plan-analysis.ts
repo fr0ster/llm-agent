@@ -1,4 +1,3 @@
-import { withEmbeddingError } from '@mcp-abap-adt/llm-agent';
 /**
  * plan-analysis.ts — DEV EVAL HARNESS (NOT shipped, NOT a unit test).
  * =====================================================================
@@ -256,12 +255,7 @@ async function buildSkillsRecall(): Promise<(goal: string) => Promise<string>> {
 
   const storeProvider = makeInMemoryStoreProvider({
     embed: async (text, options) =>
-      (
-        await withEmbeddingError(
-          () => embedder.embed(text, options),
-          options?.signal,
-        )
-      ).vector,
+      (await embedder.embed(text, options)).vector,
   });
   const host = makeSkillPluginHost({
     sources: [

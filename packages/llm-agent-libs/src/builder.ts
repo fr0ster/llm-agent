@@ -62,6 +62,7 @@ import {
   type CircuitBreakerConfig,
   CircuitBreakerLlm,
   collectServerDescriptors,
+  contextExceededError,
   contextOverflowInSettled,
   defaultToolNamespace,
   FallbackRag,
@@ -73,7 +74,6 @@ import {
   type IRagProviderRegistry,
   type IRagRegistry,
   normaliseLogger,
-  overflowError,
   QueryEmbedding,
   type RagCollectionMeta,
   type RagCollectionOwner,
@@ -977,12 +977,12 @@ export class SmartAgentBuilder {
               { maxTokens: 10 },
             );
             if (!result.ok) {
-              const overflow = overflowError(result.error);
+              const overflow = contextExceededError(result.error);
               if (overflow) throw overflow;
             }
             return result;
           } catch (error) {
-            throw overflowError(error) ?? error;
+            throw contextExceededError(error) ?? error;
           }
         };
         let result = await probe();

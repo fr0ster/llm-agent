@@ -148,34 +148,3 @@ it('prefers a returned overflow over a rejected batch in the same wave', async (
   assert.deepEqual(result, { ok: false, error: overflow });
   assert.equal(calls, 2);
 });
-
-it('preserves an ordinary thrown decision failure', async () => {
-  const failure = new Error('Network unavailable');
-  const model: IDecisionModel = {
-    async decide() {
-      throw failure;
-    },
-  };
-  await assert.rejects(
-    new DecisionReranker(model).rerank('q', mk(2)),
-    (error) => error === failure,
-  );
-});
-
-it('preserves a decision SDK cancellation and usage when the caller signal remains active', async () => {
-  const usage = { promptTokens: 4, completionTokens: 0, totalTokens: 4 };
-  const cause = new RagError('Context overflow', MODEL_CONTEXT_EXCEEDED);
-  const error = Object.assign(
-    new DecisionError('Cancelled', 'DECISION_ABORTED'),
-    { cause, usage },
-  );
-  const model: IDecisionModel = {
-    async decide() {
-      return { ok: false, error };
-    },
-  };
-  const result = await new DecisionReranker(model).rerank('q', mk(2));
-  assert.ok(!result.ok);
-  assert.equal(result.error.code, 'ABORTED');
-  assert.deepEqual(result.error.usage, usage);
-});

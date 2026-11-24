@@ -6,7 +6,7 @@ import type {
   OrchestratorError,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { overflowError, toAbortError } from '@mcp-abap-adt/llm-agent';
+import { contextExceededError } from '@mcp-abap-adt/llm-agent';
 
 /**
  * Translate a RAG query to English for search purposes. Skips ASCII-only and
@@ -37,8 +37,7 @@ export async function toEnglishForRag(
     { ...opts, usage: opts?.usage?.with({ role: 'translate' }) },
   );
   if (!res.ok) {
-    const terminal =
-      toAbortError(res.error, opts?.signal) ?? overflowError(res.error);
+    const terminal = contextExceededError(res.error);
     if (terminal) throw terminal;
   }
   return res.ok && res.value.content.trim() ? res.value.content.trim() : text;

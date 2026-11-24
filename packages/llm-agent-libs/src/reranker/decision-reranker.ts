@@ -1,11 +1,9 @@
 import {
-  abortRunError,
   type CallOptions,
   collectWithContextOverflow,
-  copyErrorUsage,
+  contextExceededError,
   type DecisionAnswer,
   type DecisionEntry,
-  DecisionError,
   formatTrustTag,
   type IDecisionModel,
   type NoulQuestion,
@@ -14,7 +12,6 @@ import {
   type Result,
 } from '@mcp-abap-adt/llm-agent';
 import { assertPositiveInteger } from '../util/assert-positive-integer.js';
-import { runInterruption } from '../utils/with-abort.js';
 import type { IReranker } from './types.js';
 
 export const DECISION_RERANK_DEFAULT_TASK =
@@ -123,6 +120,7 @@ export class DecisionReranker implements IReranker {
           this.runBatch(query, results, idxs, task, criteria, options),
         ),
         (result) => (result.ok ? undefined : result.error),
+        { rejectImmediately: true },
       );
       if (!batch.ok) return batch;
       for (const res of batch.value) {
@@ -169,28 +167,16 @@ export class DecisionReranker implements IReranker {
         criteria,
       };
     }
-    const interruption = <T>(error: T) =>
-      error instanceof DecisionError && error.code === 'DECISION_ABORTED'
-        ? abortRunError(error)
-        : runInterruption(options?.signal, [error]);
-    let res: Awaited<ReturnType<IDecisionModel['decide']>>;
-    try {
-      res = await this.model.decide({ state: query, questions }, options);
-    } catch (error) {
-      const terminal = interruption(error);
-      throw terminal ? copyErrorUsage(terminal, error) : error;
-    }
+    const res = await this.model.decide({ state: query, questions }, options);
     if (!res.ok) {
       return {
         ok: false,
-        error: copyErrorUsage(
-          interruption(res.error) ??
-            new RagError(
-              `decision rerank failed: ${res.error.code}: ${res.error.message}`,
-              'RERANK_ERROR',
-            ),
-          res.error,
-        ),
+        error:
+          contextExceededError(res.error) ??
+          new RagError(
+            `decision rerank failed: ${res.error.code}: ${res.error.message}`,
+            'RERANK_ERROR',
+          ),
       };
     }
     return { ok: true, value: res.value.answers };

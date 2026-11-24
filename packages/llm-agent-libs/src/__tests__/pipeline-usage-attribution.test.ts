@@ -1230,112 +1230,63 @@ for (const mode of ['adaptive', 'dag'] as const) {
   });
 }
 
-for (const validRevision of [true, false]) {
-  const name = validRevision
-    ? 'adaptive check, revision and stop report each use their call model'
-    : 'adaptive surfaces one typed error for an empty revision';
-  test(name, async () => {
-    let workerRuns = 0;
-    let reports = 0;
-    const worker: ISubAgent = {
-      name: 'executor',
-      capabilities: { contextPolicy: 'optional' },
-      async run() {
-        workerRuns++;
-        return { output: 'work done' };
-      },
-    };
-    const work = {
-      id: 'work',
-      kind: 'work',
-      worker: worker.name,
-      goal: 'Work',
-    } as const;
-    const controller: IAdaptiveController = {
-      name: 'controller',
-      model: 'default-controller',
-      async plan() {
-        return {
-          plan: {
-            createdAt: 0,
-            steps: [
-              {
-                id: 'check',
-                kind: 'check',
-                worker: 'self',
-                goal: 'Check',
-                targets: [],
-                onPass: 'next',
-                onFail: 'end',
-              },
-              { id: 'revise', kind: 'revise', reason: 'Revise' },
-              work,
-            ],
-          },
-        };
-      },
-      async check() {
-        return {
-          verdict: { verdict: 'pass', reason: 'ok' },
-          model: 'reviewer',
-          usage: firstUsage,
-        };
-      },
-      async revise() {
-        return {
-          steps: validRevision ? [{ ...work, id: 'revised-work' }] : [],
-          model: 'revision',
-          usage: secondUsage,
-        };
-      },
-      async report({ stopReason }) {
-        reports++;
-        assert.equal(stopReason, 'plan ended without an answer');
-        return { text: 'report', model: 'reporter', usage: finalizerUsage };
-      },
-    };
-    const parent = await builder()
-      .withMainLlm(unusedLlm)
-      .withStepperCoordinator(
-        new AdaptiveCoordinatorHandler({
-          controller,
-          workers: new Map([[worker.name, worker]]),
-        }),
-      )
-      .build()
-      .then(unwrapBuilderResult);
-    try {
-      if (!validRevision) {
-        const errors: OrchestratorError[] = [];
-        for await (const chunk of parent.agent.streamProcess(
-          'request',
-          testCallOptions(),
-        )) {
-          if (!chunk.ok) errors.push(chunk.error);
-        }
-        assert.equal(errors.length, 1);
-        assert.ok(errors[0] instanceof OrchestratorError);
-        assert.equal(errors[0].code, 'COORDINATOR_REVISE_FAILED');
-        assert.equal(errors[0].message, 'steps must be a non-empty array');
-        assert.equal(reports, 0);
-        assert.equal(workerRuns, 0);
-        return;
-      }
-      const result = await parent.agent.process('request', testCallOptions());
-      assert.ok(result.ok);
-      assert.equal(result.value.content, 'report');
-      assert.equal(reports, 1);
-      assert.equal(workerRuns, 1);
-      assert.deepEqual(result.value.usage?.models, {
-        reviewer: { ...firstUsage, requests: 1 },
-        revision: { ...secondUsage, requests: 1 },
-        reporter: { ...finalizerUsage, requests: 1 },
-      });
-    } finally {
-      await parent.close();
-    }
-  });
-}
+test('adaptive check, revision and stop report each use their call model', async () => {
+  const controller: IAdaptiveController = {
+    name: 'controller',
+    model: 'default-controller',
+    async plan() {
+      return {
+        plan: {
+          createdAt: 0,
+          steps: [
+            {
+              id: 'check',
+              kind: 'check',
+              worker: 'self',
+              goal: 'Check',
+              targets: [],
+              onPass: 'next',
+              onFail: 'end',
+            },
+            { id: 'revise', kind: 'revise', reason: 'Revise' },
+          ],
+        },
+      };
+    },
+    async check() {
+      return {
+        verdict: { verdict: 'pass', reason: 'ok' },
+        model: 'reviewer',
+        usage: firstUsage,
+      };
+    },
+    async revise() {
+      return { steps: [], model: 'revision', usage: secondUsage };
+    },
+    async report() {
+      return { text: 'report', model: 'reporter', usage: finalizerUsage };
+    },
+  };
+  const parent = await builder()
+    .withMainLlm(unusedLlm)
+    .withStepperCoordinator(
+      new AdaptiveCoordinatorHandler({ controller, workers: new Map() }),
+    )
+    .build()
+    .then(unwrapBuilderResult);
+  try {
+    const result = await parent.agent.process('request', testCallOptions());
+    assert.ok(result.ok);
+    assert.equal(result.value.content, 'report');
+    assert.deepEqual(result.value.usage?.models, {
+      reviewer: { ...firstUsage, requests: 1 },
+      revision: { ...secondUsage, requests: 1 },
+      reporter: { ...finalizerUsage, requests: 1 },
+    });
+  } finally {
+    await parent.close();
+  }
+});
 
 test('loggers deduplicate ids and count distinct calls with identical usage', () => {
   const call: LlmCallRecord = {

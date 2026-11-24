@@ -28,12 +28,11 @@ import type {
 import {
   assertClientDescriptors,
   buildNamespacedTools,
+  contextExceededError,
   DefaultWaitStrategy,
   defaultToolNamespace,
   defaultToolRecordKey,
   embedDocumentRecords,
-  overflowError,
-  toAbortError,
 } from '@mcp-abap-adt/llm-agent';
 
 /**
@@ -94,9 +93,7 @@ async function writeOne(
       ? await writer.upsertPrecomputedRaw(id, text, vector, metadata, options)
       : await writer.upsertRaw(id, text, metadata, options);
   if (result && !result.ok) {
-    const terminal =
-      toAbortError(result.error, options?.signal) ??
-      overflowError(result.error);
+    const terminal = contextExceededError(result.error);
     if (terminal) throw terminal;
   }
   const ok = result?.ok === true;
@@ -207,17 +204,14 @@ export async function vectorizeMcpTools(
       try {
         const toolsResult = await adapter.listTools(options);
         if (!toolsResult.ok) {
-          const overflow =
-            toAbortError(toolsResult.error, options?.signal) ??
-            overflowError(toolsResult.error);
+          const overflow = contextExceededError(toolsResult.error);
           if (overflow) throw overflow;
           acc.clientFailures++;
           continue;
         }
         clientTools = toolsResult.value;
       } catch (error) {
-        const overflow =
-          toAbortError(error, options?.signal) ?? overflowError(error);
+        const overflow = contextExceededError(error);
         if (overflow) throw overflow;
         acc.clientFailures++;
         continue;
@@ -323,7 +317,7 @@ export async function vectorizeMcpTools(
         detail: 'tools',
       });
     } catch (err) {
-      const overflow = toAbortError(err, options?.signal) ?? overflowError(err);
+      const overflow = contextExceededError(err);
       if (overflow) throw overflow;
       // Falls through to the sequential path below. Chunking and retry
       // already ran inside the embedder, so reaching here means the
@@ -357,16 +351,14 @@ export async function vectorizeMcpTools(
     try {
       bulk = await bulkWrite;
     } catch (error) {
-      const overflow =
-        toAbortError(error, options?.signal) ?? overflowError(error);
+      const overflow = contextExceededError(error);
       if (overflow) throw overflow;
     }
     if (bulk?.ok) {
       written.fill(true);
       bulkWritten = true;
     } else if (bulk) {
-      const overflow =
-        toAbortError(bulk.error, options?.signal) ?? overflowError(bulk.error);
+      const overflow = contextExceededError(bulk.error);
       if (overflow) throw overflow;
     }
     // else: fall through to the per-tool loop below.
@@ -388,8 +380,7 @@ export async function vectorizeMcpTools(
           options,
         );
       } catch (error) {
-        const terminal =
-          toAbortError(error, options?.signal) ?? overflowError(error);
+        const terminal = contextExceededError(error);
         if (terminal) throw terminal;
         // A throwing write is this tool's failure, not the client's: the loop
         // continues and the name lands in `failed`.
@@ -484,9 +475,7 @@ export async function vectorizeSkills(
   if (!writer) return;
   const skillsResult = await skillManager.listSkills(options);
   if (!skillsResult.ok) {
-    const overflow =
-      toAbortError(skillsResult.error, options?.signal) ??
-      overflowError(skillsResult.error);
+    const overflow = contextExceededError(skillsResult.error);
     if (overflow) throw overflow;
     return;
   }
@@ -508,8 +497,7 @@ export async function vectorizeSkills(
         options,
       );
     } catch (error) {
-      const terminal =
-        toAbortError(error, options?.signal) ?? overflowError(error);
+      const terminal = contextExceededError(error);
       if (terminal) throw terminal;
       ok = false;
     }

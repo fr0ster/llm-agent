@@ -3,9 +3,7 @@ import type { IEmbedderBatch, IEmbedResult } from '@mcp-abap-adt/llm-agent';
 import {
   beginEmbeddingRequest,
   type CallOptions,
-  embeddingErrorCode,
-  embeddingOverflowError,
-  findAbort,
+  EMBEDDING_CONTEXT_EXCEEDED,
   type IUsageRecorder,
   RagError,
   startOperation,
@@ -52,6 +50,40 @@ interface GeminiPredictResponse {
   predictions?: Array<{
     embeddings?: { values?: number[]; statistics?: { token_count?: number } };
   }>;
+}
+
+export function isEmbeddingOverflow<T>(
+  status: number | undefined,
+  detail: T,
+): boolean {
+  if (
+    status !== undefined &&
+    status !== 400 &&
+    status !== 413 &&
+    status !== 422
+  )
+    return false;
+  if (typeof detail !== 'string') return false;
+  const counts =
+    /\bmaximum context length is (\d+) tokens?\b[\s\S]*?\byou requested (\d+) tokens?\b/i.exec(
+      detail,
+    );
+  return (
+    /\b(?:context_length_exceeded|input (?:text )?(?:is )?too (?:long|large)|(?:input (?:length )?|(?:input )?token count )exceeds? (?:the )?(?:maximum )?(?:context (?:length|window)|token limit)|too many tokens)\b/i.test(
+      detail,
+    ) ||
+    (counts !== null && Number(counts[2]) > Number(counts[1]))
+  );
+}
+
+async function inferenceError(response: Response): Promise<RagError> {
+  const text = await response.text().catch(() => '');
+  const message = `SAP AI Core embeddings call failed: ${response.status} ${response.statusText} ${text}`;
+  return isEmbeddingOverflow(response.status, text)
+    ? Object.assign(new RagError(message, EMBEDDING_CONTEXT_EXCEEDED), {
+        status: response.status,
+      })
+    : new RagError(message);
 }
 
 export class FoundationModelsEmbedder implements IEmbedderBatch {
@@ -142,12 +174,7 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
         });
         if (!res.ok) {
           request.end({ outcome: 'error', errorCode: String(res.status) });
-          const text = await res.text().catch(() => '');
-          throw new RagError(
-            `SAP AI Core embeddings call failed: ${res.status} ${res.statusText} ${text}`,
-            embeddingErrorCode(res.status, text, 'RAG_ERROR'),
-            { status: res.status },
-          );
+          throw await inferenceError(res);
         }
         const json = (await res.json()) as GeminiPredictResponse;
         const counts = json.predictions?.map(
@@ -182,12 +209,7 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
       });
       if (!res.ok) {
         request.end({ outcome: 'error', errorCode: String(res.status) });
-        const text = await res.text().catch(() => '');
-        throw new RagError(
-          `SAP AI Core embeddings call failed: ${res.status} ${res.statusText} ${text}`,
-          embeddingErrorCode(res.status, text, 'RAG_ERROR'),
-          { status: res.status },
-        );
+        throw await inferenceError(res);
       }
       const json = (await res.json()) as OpenAiEmbeddingsResponse;
       const result = this.processEmbeddings(json.data ?? []);
@@ -199,13 +221,15 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
       });
       return result;
     } catch (error) {
-      const aborted = options?.signal?.aborted || findAbort(error);
       request.end({
-        outcome: aborted ? 'aborted' : 'error',
+        outcome:
+          options?.signal?.aborted ||
+          (error instanceof Error && error.name === 'AbortError')
+            ? 'aborted'
+            : 'error',
         error,
       });
-      if (aborted) throw error;
-      throw embeddingOverflowError(error) ?? error;
+      throw error;
     }
   }
 

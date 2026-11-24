@@ -3,9 +3,7 @@ import type { IEmbedderBatch, IEmbedResult } from '@mcp-abap-adt/llm-agent';
 import {
   beginEmbeddingRequest,
   type CallOptions,
-  embeddingErrorCode,
-  embeddingOverflowError,
-  findAbort,
+  EMBEDDING_CONTEXT_EXCEEDED,
   type IUsageRecorder,
   parseRetryAfter,
   RagError,
@@ -25,6 +23,20 @@ export interface OpenAiEmbedderConfig {
   baseURL?: string;
   /** Required: embedding model name (e.g. 'text-embedding-3-small'). No default — must be set explicitly. */
   model: string;
+}
+
+function embeddingErrorCode(status: number, detail: string): string {
+  if (status !== 400 && status !== 413 && status !== 422) return 'EMBED_ERROR';
+  const counts =
+    /\bmaximum context length is (\d+) tokens?\b[\s\S]*?\byou requested (\d+) tokens?\b/i.exec(
+      detail,
+    );
+  const overflow =
+    /\b(?:context_length_exceeded|input (?:text )?(?:is )?too (?:long|large)|input (?:length )?exceeds (?:the )?(?:maximum )?(?:context (?:length|window)|token limit)|too many tokens)\b/i.test(
+      detail,
+    ) ||
+    (counts && Number(counts[2]) > Number(counts[1]));
+  return overflow ? EMBEDDING_CONTEXT_EXCEEDED : 'EMBED_ERROR';
 }
 
 export class OpenAiEmbedder implements IEmbedderBatch {
@@ -94,7 +106,8 @@ export class OpenAiEmbedder implements IEmbedderBatch {
       if (!res.ok) {
         const errorText = await res.text().catch((error) => {
           options?.signal?.throwIfAborted();
-          if (findAbort(error)) throw error;
+          if (error instanceof Error && error.name === 'AbortError')
+            throw error;
           return '';
         });
         options?.signal?.throwIfAborted();
@@ -133,13 +146,15 @@ export class OpenAiEmbedder implements IEmbedderBatch {
       });
       return { vector, usage };
     } catch (err) {
-      const aborted = options?.signal?.aborted || findAbort(err);
       request?.end({
-        outcome: aborted ? 'aborted' : 'error',
+        outcome:
+          options?.signal?.aborted ||
+          (err instanceof Error && err.name === 'AbortError')
+            ? 'aborted'
+            : 'error',
         error: err,
       });
-      if (aborted) throw err;
-      throw embeddingOverflowError(err) ?? err;
+      throw err;
     }
   }
 
@@ -182,7 +197,8 @@ export class OpenAiEmbedder implements IEmbedderBatch {
       if (!res.ok) {
         const errorText = await res.text().catch((error) => {
           options?.signal?.throwIfAborted();
-          if (findAbort(error)) throw error;
+          if (error instanceof Error && error.name === 'AbortError')
+            throw error;
           return '';
         });
         options?.signal?.throwIfAborted();
@@ -231,13 +247,15 @@ export class OpenAiEmbedder implements IEmbedderBatch {
         usage: usagePerItem,
       }));
     } catch (err) {
-      const aborted = options?.signal?.aborted || findAbort(err);
       request?.end({
-        outcome: aborted ? 'aborted' : 'error',
+        outcome:
+          options?.signal?.aborted ||
+          (err instanceof Error && err.name === 'AbortError')
+            ? 'aborted'
+            : 'error',
         error: err,
       });
-      if (aborted) throw err;
-      throw embeddingOverflowError(err) ?? err;
+      throw err;
     }
   }
 }

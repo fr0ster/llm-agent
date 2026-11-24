@@ -1,6 +1,3 @@
-import { findAbort, toAbortError } from '../errors/abort-run-error.js';
-import { copyErrorUsage } from '../errors/error-usage.js';
-import { overflowError } from '../errors/terminal-run-error.js';
 /**
  * Base interface for LLM providers
  */
@@ -289,15 +286,15 @@ export abstract class BaseLLMProvider<
    * Providers rethrow their transport error as a readable one. Call this on the
    * way out so the consumer still reads a fact, not a substring.
    */
-  protected preserveThrottled<T, E extends Error>(original: T, wrapped: E): E {
-    const interruption = toAbortError(original) ?? overflowError(original);
-    const safe = preserveThrottled(original, wrapped);
-    if (interruption) Object.assign(safe, { code: interruption.code });
-    return copyErrorUsage(safe, original, interruption);
+  protected preserveThrottled<E extends Error>(
+    original: unknown,
+    wrapped: E,
+  ): E {
+    return preserveThrottled(original, wrapped);
   }
 
   protected credentialSafeError<T>(error: T, message: string): Error {
-    return this.preserveThrottled(error, new Error(message));
+    return preserveThrottled(error, new Error(message));
   }
 
   /** Wrap one provider call in the shared policy. */
@@ -396,7 +393,11 @@ export abstract class BaseLLMProvider<
 function requestAborted(error: unknown, signal?: AbortSignal): boolean {
   if (signal?.aborted) return true;
   try {
-    return findAbort(error) !== undefined;
+    return (
+      error instanceof Error &&
+      (error.name === 'AbortError' ||
+        ('code' in error && error.code === 'ERR_CANCELED'))
+    );
   } catch {
     return false;
   }
@@ -415,7 +416,16 @@ function fingerprint(secret: string | undefined): string {
 }
 
 function isTransientFailure(error: object | undefined): boolean {
-  if (findAbort(error) || isAuthenticationFailure(error)) return false;
+  if (isAuthenticationFailure(error)) return false;
+  for (const current of errorCauseChain(error)) {
+    if (
+      ('name' in current &&
+        ['AbortError', 'CanceledError'].includes(String(current.name))) ||
+      ('code' in current &&
+        ['ERR_CANCELED', 'ABORT_ERR'].includes(String(current.code)))
+    )
+      return false;
+  }
   const status = httpStatusOf(error);
   if (status !== undefined) return [500, 502, 503, 504].includes(status);
   for (const current of errorCauseChain(error)) {

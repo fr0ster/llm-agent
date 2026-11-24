@@ -8,12 +8,10 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  copyErrorUsage,
+  contextExceededError,
   formatTrustTag,
   OrchestratorError,
-  overflowError,
   terminalRunError,
-  toAbortError,
 } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import { currentPlannerScope, type PlannerScope } from './planner-scope.js';
@@ -627,13 +625,10 @@ export class PlannerToolsClient implements IMcpClient {
             );
           })();
           if (!result.ok) {
-            const terminal =
-              toAbortError(result.error.cause, scope.signal) ??
-              (result.error.code === 'aborted'
-                ? new OrchestratorError(result.error.message, 'ABORTED')
-                : terminalRunError(result.error.cause));
-            if (terminal)
-              throw copyErrorUsage(terminal, result.error, terminal);
+            const terminal = terminalRunError(result.error.cause);
+            if (terminal) throw terminal;
+            if (result.error.code === 'aborted')
+              throw new OrchestratorError(result.error.message, 'ABORTED');
             throw new Error(`${result.error.code}: ${result.error.message}`);
           }
           scope.signal?.throwIfAborted();
@@ -850,10 +845,8 @@ export class PlannerToolsClient implements IMcpClient {
       }
     } catch (error) {
       const scope = currentPlannerScope();
-      const abort = toAbortError(error, scope?.signal);
-      const overflow = overflowError(error);
+      const overflow = contextExceededError(error);
       const terminal =
-        abort ??
         overflow ??
         (error instanceof TerminalDialogueError
           ? error
@@ -862,7 +855,7 @@ export class PlannerToolsClient implements IMcpClient {
         if (name === 'plan_create' || name === 'plan_revise')
           scope?.onPlanAuthorError?.(terminal);
         scope?.onTerminalError?.(terminal);
-        if (abort || overflow || !scope?.signal?.aborted)
+        if (overflow || !scope?.signal?.aborted)
           return { ok: false, error: terminal };
       }
       return textResult(

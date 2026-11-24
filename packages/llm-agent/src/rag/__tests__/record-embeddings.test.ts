@@ -278,35 +278,3 @@ test('immediate Retry-After lets the caller abort between refusals', async () =>
   );
   assert.equal(calls, 1);
 });
-
-test('a custom document batch rejection is a typed embedding overflow', async () => {
-  const usage = { promptTokens: 3, completionTokens: 0, totalTokens: 3 };
-  const cause = Object.assign(new Error('input too long'), {
-    status: 400,
-    usage,
-  });
-  let batches = 0;
-  const rag = new VectorRag(
-    {
-      async embedQuery() {
-        assert.fail('unexpected query embedding');
-      },
-      async embedDocument() {
-        assert.fail('unexpected single document embedding');
-      },
-      async embedDocuments() {
-        batches++;
-        throw cause;
-      },
-    },
-    { fragmentSizeChars: 3 },
-  );
-
-  const result = await rag.upsert('two fragments', { id: 'too-long' });
-  assert.ok(!result.ok);
-  assert.equal(result.error.code, 'EMBEDDING_CONTEXT_EXCEEDED');
-  assert.equal(result.error.cause, cause);
-  assert.deepEqual(result.error.usage, usage);
-  assert.equal(batches, 1);
-  assert.deepEqual(await rag.getById('too-long'), { ok: true, value: null });
-});

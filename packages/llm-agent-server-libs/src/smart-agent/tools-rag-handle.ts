@@ -1,14 +1,13 @@
 import {
   type CallOptions,
+  contextExceededError,
   contextOverflowInSettled,
   type IMcpClient,
   type IQueryEmbedder,
   type IRag,
   type IToolsRagHandle,
   type LlmTool,
-  overflowError,
   QueryEmbedding,
-  toAbortError,
   toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
 
@@ -48,19 +47,13 @@ export async function makeToolsRagHandle(
               if (!catalog.has(t.name)) catalog.set(t.name, t as LlmTool);
             }
           } else {
-            const overflow =
-              toAbortError(result.error) ?? overflowError(result.error);
+            const overflow = contextExceededError(result.error);
             if (overflow) throw overflow;
           }
         }),
       );
       const overflow = contextOverflowInSettled(listings);
       if (overflow) throw overflow;
-      for (const listing of listings) {
-        if (listing.status !== 'rejected') continue;
-        const aborted = toAbortError(listing.reason);
-        if (aborted) throw aborted;
-      }
     }
     catalogCache = catalog;
     return catalog;
@@ -87,9 +80,7 @@ export async function makeToolsRagHandle(
           }
           if (hits.length > 0) return hits;
         } else {
-          const terminal =
-            toAbortError(ragResult.error, options?.signal) ??
-            overflowError(ragResult.error);
+          const terminal = contextExceededError(ragResult.error);
           if (terminal) throw terminal;
         }
       }
@@ -109,7 +100,7 @@ export async function makeToolsRagHandle(
   try {
     await ensureCatalog();
   } catch (err) {
-    const overflow = toAbortError(err) ?? overflowError(err);
+    const overflow = contextExceededError(err);
     if (overflow) throw overflow;
     log?.({
       event: 'tools_catalog_eager_load_failed',

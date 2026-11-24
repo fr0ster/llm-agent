@@ -4,7 +4,6 @@ import type {
   IRetrievalEmbedder,
   KnowledgeEntry,
 } from '@mcp-abap-adt/llm-agent';
-import { withEmbeddingError } from '@mcp-abap-adt/llm-agent';
 import { cosine } from '../embedder-knowledge-index.js';
 import { type Outcome, resolveByPrecedence } from './outcome.js';
 
@@ -204,16 +203,13 @@ export async function relevantExtract(
     Math.floor(body / 2),
     Math.ceil(content.length / MAX_EXTRACT_WINDOWS),
   );
+  const { vector: q } = await embedder.embedQuery(ref, options);
   let bestStart = 0;
-  const { vector: q } = await withEmbeddingError(
-    () => embedder.embedQuery(ref, options),
-    options?.signal,
-  );
   let bestScore = Number.NEGATIVE_INFINITY;
   for (let s = 0; s < content.length; s += stride) {
-    const { vector } = await withEmbeddingError(
-      () => embedder.embedDocument(content.slice(s, s + body), options),
-      options?.signal,
+    const { vector } = await embedder.embedDocument(
+      content.slice(s, s + body),
+      options,
     );
     const score = cosine(q, vector);
     if (score > bestScore) {

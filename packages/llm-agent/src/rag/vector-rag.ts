@@ -1,8 +1,5 @@
 import { randomUUID as listStoreId, randomUUID } from 'node:crypto';
-import { abortRunError, toAbortError } from '../errors/abort-run-error.js';
-import { copyErrorUsage } from '../errors/error-usage.js';
-import { toRagError, withEmbeddingError } from '../errors/rag-error.js';
-import { overflowError } from '../errors/terminal-run-error.js';
+import { contextExceededError } from '../errors/terminal-run-error.js';
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type {
   IRag,
@@ -35,7 +32,11 @@ import {
 import { InvertedIndex } from './inverted-index.js';
 import { listKeyedPage } from './list-support.js';
 import type { IDocumentEnricher, IQueryPreprocessor } from './preprocessor.js';
-import { QueryEmbedding, TextOnlyEmbedding } from './query-embedding.js';
+import {
+  FallbackQueryEmbedding,
+  QueryEmbedding,
+  TextOnlyEmbedding,
+} from './query-embedding.js';
 import {
   embedRecord,
   type RecordEmbeddingConfig,
@@ -61,7 +62,8 @@ interface StoredRecord {
 }
 
 export interface VectorRagConfig extends RecordEmbeddingConfig {
-  /** @deprecated Query embedding failures always propagate. */
+  /** Retry a failed caller query embedding with the store embedder. Default: true.
+   *  TextOnlyEmbedding is always embedded by the store, regardless of this option. */
   fallbackOnQueryEmbeddingError?: boolean;
   /** @deprecated Anonymous records are deduplicated by exact document text. */
   dedupThreshold?: number;
@@ -89,6 +91,7 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private strategy: ISearchStrategy;
   private readonly queryPreprocessors: IQueryPreprocessor[];
   private readonly documentEnrichers: IDocumentEnricher[];
+  private readonly fallbackOnQueryEmbeddingError: boolean;
   /**
    * `embedder` writes the records (`embedDocument`) and embeds the search text
    * this store embeds itself (`embedQuery`) — a text-only query, a
@@ -110,6 +113,8 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       });
     this.queryPreprocessors = config.queryPreprocessors ?? [];
     this.documentEnrichers = config.documentEnrichers ?? [];
+    this.fallbackOnQueryEmbeddingError =
+      config.fallbackOnQueryEmbeddingError ?? true;
   }
 
   /** Update hybrid search weights at runtime (hot-reload). */
@@ -247,12 +252,11 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       let enrichedText = text;
       for (const enricher of this.documentEnrichers) {
         const eResult = await enricher.enrich(enrichedText, options);
-        if (!eResult.ok)
-          return {
-            ok: false,
-            error: toRagError(eResult.error, 'RAG_ERROR', options?.signal),
-          };
-        enrichedText = eResult.value;
+        if (eResult.ok) enrichedText = eResult.value;
+        else {
+          const terminal = contextExceededError(eResult.error);
+          if (terminal) return { ok: false, error: terminal };
+        }
       }
       const vectors = await embedRecord(
         this.embedder,
@@ -263,17 +267,12 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       options?.signal?.throwIfAborted();
       return this.upsertKnownVectors(enrichedText, vectors, metadata);
     } catch (err) {
-      const interruption =
-        toAbortError(err, options?.signal) ??
-        overflowError(err) ??
-        (options?.signal?.aborted
-          ? abortRunError(options.signal.reason, err)
-          : undefined);
-      if (interruption) return { ok: false, error: interruption };
-      return {
-        ok: false,
-        error: toRagError(err, 'UPSERT_ERROR', options?.signal),
-      };
+      const terminal = contextExceededError(err);
+      if (terminal) return { ok: false, error: terminal };
+      if (options?.signal?.aborted)
+        return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+      if (err instanceof RagError) return { ok: false, error: err };
+      return { ok: false, error: new RagError(String(err), 'UPSERT_ERROR') };
     }
   }
 
@@ -317,19 +316,20 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       let searchText = text;
       for (const pp of this.queryPreprocessors) {
         const ppResult = await pp.process(searchText, options);
-        if (!ppResult.ok)
-          return {
-            ok: false,
-            error: toRagError(ppResult.error, 'RAG_ERROR', options?.signal),
-          };
-        searchText = ppResult.value;
+        if (ppResult.ok) searchText = ppResult.value;
+        else {
+          const terminal = contextExceededError(ppResult.error);
+          if (terminal) return { ok: false, error: terminal };
+        }
       }
       const nowSecs = Date.now() / 1000;
       // Text-only and transformed queries need a fresh store embedding.
       const effectiveEmbedding =
         searchText !== text || embedding instanceof TextOnlyEmbedding
           ? new QueryEmbedding(searchText, this.embedder, options)
-          : embedding;
+          : this.fallbackOnQueryEmbeddingError
+            ? new FallbackQueryEmbedding(embedding, this.embedder, options)
+            : embedding;
       const queryVector = await effectiveEmbedding.toVector();
       const targetNamespace = options?.ragFilter?.namespace;
       const identity = ragIdentityFilter(options);
@@ -390,37 +390,27 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
 
       return { ok: true, value: scored };
     } catch (err) {
-      return {
-        ok: false,
-        error: toRagError(err, 'QUERY_ERROR', options?.signal),
-      };
+      const terminal = contextExceededError(err);
+      if (terminal) return { ok: false, error: terminal };
+      if (err instanceof RagError) return { ok: false, error: err };
+      return { ok: false, error: new RagError(String(err), 'QUERY_ERROR') };
     }
   }
 
   async healthCheck(options?: CallOptions): Promise<Result<void, RagError>> {
     try {
-      await withEmbeddingError(
-        () =>
-          this.embedder.embedQuery('ping', {
-            ...options,
-            usage: options?.usage?.with({ role: 'embedding' }),
-          }),
-        options?.signal,
-      );
+      await this.embedder.embedQuery('ping', {
+        ...options,
+        usage: options?.usage?.with({ role: 'embedding' }),
+      });
       return { ok: true, value: undefined };
     } catch (err) {
       return {
         ok: false,
-        error:
-          toAbortError(err, options?.signal) ??
-          overflowError(err) ??
-          copyErrorUsage(
-            new RagError(
-              `RAG health check failed: ${String(err)}`,
-              'HEALTH_CHECK_ERROR',
-            ),
-            err,
-          ),
+        error: new RagError(
+          `RAG health check failed: ${String(err)}`,
+          'HEALTH_CHECK_ERROR',
+        ),
       };
     }
   }

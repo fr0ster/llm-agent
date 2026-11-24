@@ -878,8 +878,7 @@ for (const mode of ['ok', 'returned', 'throw', 'abort'] as const) {
       })) {
       }
     };
-    if (mode === 'abort') await assert.rejects(runBatch, { code: 'ABORTED' });
-    else await runBatch();
+    await runBatch();
     assert.equal(requests, 1);
     assert.equal(records.length, 1);
     if (mode === 'ok') {
@@ -915,9 +914,7 @@ for (const mode of ['ok', 'returned', 'throw', 'abort'] as const) {
         options: { ...options, userId: 'test-user', sessionId: 's' },
       },
     );
-    const mixed = registry.consume({ userId: 'test-user', sessionId: 's' });
-    if (mode === 'abort') await assert.rejects(mixed, { code: 'ABORTED' });
-    else await mixed;
+    await registry.consume({ userId: 'test-user', sessionId: 's' });
     assert.equal(requests, 2);
     assert.equal(records.length - beforeMixed, 1);
     controller = new AbortController();

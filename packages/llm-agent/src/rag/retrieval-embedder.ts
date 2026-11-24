@@ -1,4 +1,3 @@
-import { withEmbeddingError } from '../errors/rag-error.js';
 import {
   type IEmbedder,
   type IRetrievalEmbedder,
@@ -17,15 +16,10 @@ function documentBatch(
           ? embedder.maxBatchSize
           : undefined,
         embedDocuments: (texts: string[], options?: CallOptions) =>
-          withEmbeddingError(
-            () =>
-              embedder.embedBatch(texts, {
-                ...options,
-                usage: options?.usage?.with({ role: 'embedding' }),
-              }),
-            options?.signal,
-            'preserve-rejection',
-          ),
+          embedder.embedBatch(texts, {
+            ...options,
+            usage: options?.usage?.with({ role: 'embedding' }),
+          }),
       }
     : {};
 }
@@ -38,27 +32,17 @@ function documentBatch(
 export function symmetricEmbedder(embedder: IEmbedder): IRetrievalEmbedder {
   return {
     embedDocument: (text, options) =>
-      withEmbeddingError(
-        () =>
-          embedder.embed(text, {
-            ...options,
-            usage: options?.usage?.with({ role: 'embedding' }),
-          }),
-        options?.signal,
-        'preserve-rejection',
-      ),
+      embedder.embed(text, {
+        ...options,
+        usage: options?.usage?.with({ role: 'embedding' }),
+      }),
     ...documentBatch(embedder),
     getMaxInputChars: embedder.getMaxInputChars?.bind(embedder),
     embedQuery: (text, options) =>
-      withEmbeddingError(
-        () =>
-          embedder.embed(text, {
-            ...options,
-            usage: options?.usage?.with({ role: 'embedding' }),
-          }),
-        options?.signal,
-        'preserve-rejection',
-      ),
+      embedder.embed(text, {
+        ...options,
+        usage: options?.usage?.with({ role: 'embedding' }),
+      }),
   };
 }
 
@@ -74,26 +58,16 @@ export function asymmetricEmbedder(halves: {
 }): IRetrievalEmbedder {
   return {
     embedDocument: (text, options) =>
-      withEmbeddingError(
-        () =>
-          halves.document.embed(text, {
-            ...options,
-            usage: options?.usage?.with({ role: 'embedding' }),
-          }),
-        options?.signal,
-        'preserve-rejection',
-      ),
+      halves.document.embed(text, {
+        ...options,
+        usage: options?.usage?.with({ role: 'embedding' }),
+      }),
     ...documentBatch(halves.document),
     getMaxInputChars: halves.document.getMaxInputChars?.bind(halves.document),
     embedQuery: (text, options) =>
-      withEmbeddingError(
-        () =>
-          halves.query.embed(text, {
-            ...options,
-            usage: options?.usage?.with({ role: 'embedding' }),
-          }),
-        options?.signal,
-        'preserve-rejection',
-      ),
+      halves.query.embed(text, {
+        ...options,
+        usage: options?.usage?.with({ role: 'embedding' }),
+      }),
   };
 }

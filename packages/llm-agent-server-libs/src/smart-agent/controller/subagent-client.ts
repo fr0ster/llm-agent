@@ -1,11 +1,9 @@
 import {
   type CallOptions,
-  errorUsage,
+  contextExceededError,
   type ILlm,
   type LlmTool,
   type Message,
-  overflowError,
-  toAbortError,
 } from '@mcp-abap-adt/llm-agent';
 import type { SubagentResult } from './types.js';
 
@@ -53,17 +51,10 @@ export function makeSubagentClient(llm: ILlm): ISubagentClient {
         { messages, tools: tools ?? [] },
         'llm',
       );
-      const failure = <T>(
-        error: T,
-        ordinaryMessage?: string,
-      ): SubagentResult => {
-        const abort = toAbortError(error, options?.signal);
-        const contextOverflow = abort ? undefined : overflowError(error);
-        const terminal = abort ?? contextOverflow;
-        if (!terminal && ordinaryMessage === undefined) throw error;
-        const message =
-          ordinaryMessage ?? terminal?.message ?? 'subagent llm error';
-        const { usage } = errorUsage(terminal ?? error);
+      const r = await llm.chat(messages, tools, options);
+      if (!r.ok) {
+        const contextOverflow = contextExceededError(r.error);
+        const message = r.error?.message ?? 'subagent llm error';
         options?.sessionLogger?.logStep(
           `llm_response_${n}`,
           { error: message },
@@ -72,19 +63,8 @@ export function makeSubagentClient(llm: ILlm): ISubagentClient {
         return {
           kind: 'error',
           error: message,
-          ...(abort && { abort }),
           ...(contextOverflow && { contextOverflow }),
-          ...(usage && { usage }),
         };
-      };
-      let r: Awaited<ReturnType<ILlm['chat']>>;
-      try {
-        r = await llm.chat(messages, tools, options);
-      } catch (error) {
-        return failure(error);
-      }
-      if (!r.ok) {
-        return failure(r.error, r.error?.message ?? 'subagent llm error');
       }
       const v = r.value;
       options?.sessionLogger?.logStep(

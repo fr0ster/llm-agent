@@ -3,9 +3,10 @@ import type { RagCaller } from '@mcp-abap-adt/llm-agent';
 import {
   AdapterValidationError,
   buildExternalResults,
+  contextExceededError,
   type ILlmApiAdapter,
+  MODEL_CONTEXT_EXCEEDED,
   type NormalizedRequest,
-  overflowError,
 } from '@mcp-abap-adt/llm-agent';
 import type { SessionGraph, SmartAgent } from '@mcp-abap-adt/llm-agent-libs';
 import { canWrite, createRequestAbort } from './request-abort.js';
@@ -133,7 +134,7 @@ export async function handleAdapterRequest(
   try {
     result = await agent.process(sanitizedMessages, augmentedOptions);
   } catch (err) {
-    const overflow = overflowError(err);
+    const overflow = contextExceededError(err);
     if (overflow) result = { ok: false, error: overflow };
     else {
       if (!abort.signal.aborted) throw err;
@@ -147,8 +148,8 @@ export async function handleAdapterRequest(
   }
   res.setHeader('Content-Type', 'application/json');
   if (!result.ok) {
-    const failure = overflowError(result.error) ?? result.error;
-    res.writeHead(overflowError(failure) ? 400 : 500);
+    const failure = contextExceededError(result.error) ?? result.error;
+    res.writeHead(failure.code === MODEL_CONTEXT_EXCEEDED ? 400 : 500);
     res.end(
       JSON.stringify(
         adapter.formatError?.(failure, normalized.context) ?? {

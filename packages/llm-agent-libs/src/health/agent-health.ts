@@ -1,5 +1,5 @@
 import type { CallOptions, ILlm, IMcpClient } from '@mcp-abap-adt/llm-agent';
-import { overflowError } from '@mcp-abap-adt/llm-agent';
+import { contextExceededError } from '@mcp-abap-adt/llm-agent';
 import type { OwnedRagStore } from '../rag/owner-bound-query.js';
 
 export interface AgentHealthSnapshot {
@@ -40,7 +40,7 @@ export const buildAgentHealthSnapshot: IAgentHealthProbe = async (
       );
       results.llm = llmRes.ok;
       if (!llmRes.ok) {
-        const terminal = overflowError(llmRes.error);
+        const terminal = contextExceededError(llmRes.error);
         if (terminal) throw terminal;
         options?.sessionLogger?.logStep('health_llm_probe_error', {
           reason: String(llmRes.error?.message ?? llmRes.error),
@@ -49,7 +49,7 @@ export const buildAgentHealthSnapshot: IAgentHealthProbe = async (
     }
   } catch (err) {
     if (!mainLlm.healthCheck) {
-      const terminal = overflowError(err);
+      const terminal = contextExceededError(err);
       if (terminal) throw terminal;
     }
     results.llm = false;

@@ -85,7 +85,6 @@ async function adaptive(llm: ILlm) {
       createdAt: 0,
       steps: [
         { id: node.id, kind: 'work', worker: workerName, goal: node.goal },
-        { id: 'later', kind: 'work', worker: workerName, goal: 'Continue' },
       ],
     },
     workers: workers(llm),
@@ -98,7 +97,6 @@ async function adaptive(llm: ILlm) {
     [[node.id, 'failed']],
   );
   assert.ok(result.error);
-  assert.equal(result.error.stepId, node.id);
   throw result.error;
 }
 
@@ -265,8 +263,6 @@ for (const [kind, run] of Object.entries({
           assert.ok(error instanceof SmartAgentError);
           assert.equal(error.code, stopCode);
           assert.equal(httpStatusOf(error), failure.status);
-          if (kind === 'adaptive' && !failure.response.ok)
-            assert.equal(error.cause, failure.response.error);
           return true;
         });
         assert.equal(calls, 1);

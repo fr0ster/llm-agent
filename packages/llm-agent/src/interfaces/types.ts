@@ -170,18 +170,13 @@ export interface LlmStreamChunk {
 // ---------------------------------------------------------------------------
 
 export class SmartAgentError extends Error {
-  declare usage?: LlmUsage;
   declare usageCalls?: readonly LlmCallRecord[];
-  declare readonly status?: number;
 
   constructor(
     message: string,
     public readonly code: string,
-    options?: ErrorOptions & { status?: number },
   ) {
-    super(message, options);
-    if (options?.status !== undefined)
-      Object.assign(this, { status: options.status });
+    super(message);
     this.name = 'SmartAgentError';
   }
 }
@@ -227,12 +222,8 @@ export function isMcpUnavailable(err: unknown): boolean {
 }
 
 export class RagError extends SmartAgentError {
-  constructor(
-    message: string,
-    code = 'RAG_ERROR',
-    options?: ConstructorParameters<typeof SmartAgentError>[2],
-  ) {
-    super(message, code, options);
+  constructor(message: string, code = 'RAG_ERROR') {
+    super(message, code);
     this.name = 'RagError';
   }
 }

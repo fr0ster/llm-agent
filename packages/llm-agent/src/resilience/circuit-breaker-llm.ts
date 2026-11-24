@@ -8,7 +8,6 @@
 import type { ILlm, Message } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
-  copyErrorUsage,
   LlmError,
   type LlmResponse,
   type LlmStreamChunk,
@@ -102,9 +101,7 @@ export class CircuitBreakerLlm implements ILlm {
       }
       yield {
         ok: false,
-        error:
-          terminalRunError(err, options?.signal) ??
-          copyErrorUsage(new LlmError(String(err), 'LLM_ERROR'), err),
+        error: terminalRunError(err) ?? new LlmError(String(err), 'LLM_ERROR'),
       };
       return;
     }

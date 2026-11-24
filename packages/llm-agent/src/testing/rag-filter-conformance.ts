@@ -1,4 +1,3 @@
-import { withEmbeddingError } from '../errors/rag-error.js';
 /**
  * Conformance kit for the identity filter every `IRag` store must honour.
  *
@@ -132,8 +131,7 @@ async function queryIds(
   const res = await rag.query(
     {
       text,
-      toVector: async () =>
-        (await withEmbeddingError(() => embedder.embed(text))).vector,
+      toVector: async () => (await embedder.embed(text)).vector,
     },
     k,
     ragFilter ? { ragFilter } : undefined,
@@ -748,9 +746,7 @@ export async function ragRawOwnerConformanceCase(h: {
       false,
       `${record.id} must be refused`,
     );
-    const vector = (
-      await withEmbeddingError(() => conformanceEmbedder().embed(record.text))
-    ).vector;
+    const vector = (await conformanceEmbedder().embed(record.text)).vector;
     if (writer.upsertPrecomputedRaw)
       assert.equal(
         (

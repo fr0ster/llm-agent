@@ -1,8 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   addCacheTokenUsage,
-  overflowError,
-  toAbortError,
+  contextExceededError,
 } from '@mcp-abap-adt/llm-agent';
 /**
  * TranslateHandler — translates non-ASCII RAG query text to English.
@@ -63,9 +62,7 @@ export class TranslateHandler implements IStageHandler {
     });
 
     if (!res.ok) {
-      const terminal =
-        toAbortError(res.error, ctx.options?.signal) ??
-        overflowError(res.error);
+      const terminal = contextExceededError(res.error);
       if (terminal) throw terminal;
     } else if (res.value.content.trim()) {
       ctx.ragText = res.value.content.trim();

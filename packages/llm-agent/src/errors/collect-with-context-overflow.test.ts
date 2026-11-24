@@ -63,33 +63,3 @@ test('fail-fast collection preserves the ordinary rejection with a pending sibli
     (caught) => caught === error,
   );
 });
-
-for (const returnsError of [false, true]) {
-  test(
-    'collection settles on an abort wrapping overflow with a pending sibling (' +
-      (returnsError ? 'returned' : 'rejected') +
-      ')',
-    async () => {
-      const usage = { promptTokens: 1, completionTokens: 2, totalTokens: 3 };
-      const overflow = Object.assign(
-        new LlmError('Context is full', MODEL_CONTEXT_EXCEEDED),
-        { usage },
-      );
-      const abort = Object.assign(new Error('Cancelled', { cause: overflow }), {
-        name: 'AbortError',
-      });
-      const result = await collectWithContextOverflow(
-        [
-          Promise.reject(new Error('Ordinary failure')),
-          new Promise<Error>(() => {}),
-          returnsError ? Promise.resolve(abort) : Promise.reject(abort),
-        ],
-        (error) => error,
-      );
-      assert.ok(!result.ok);
-      assert.equal(result.error.code, 'ABORTED');
-      assert.equal(result.error.cause, abort);
-      assert.deepEqual(result.error.usage, usage);
-    },
-  );
-}

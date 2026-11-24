@@ -11,11 +11,7 @@ import type {
   ToolResult,
   UsageInput,
 } from '@mcp-abap-adt/llm-agent';
-import {
-  copyErrorUsage,
-  findAbort,
-  overflowError,
-} from '@mcp-abap-adt/llm-agent';
+import { contextExceededError } from '@mcp-abap-adt/llm-agent';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -436,8 +432,7 @@ export class MCPClientWrapper {
     try {
       return await performList();
     } catch (error) {
-      if (findAbort(error)) throw error;
-      const terminal = overflowError(error);
+      const terminal = contextExceededError(error);
       if (terminal) throw terminal;
       const errorMessage =
         error instanceof Error ? error.message : String(error);
@@ -449,8 +444,7 @@ export class MCPClientWrapper {
         await this.connect();
         return await performList();
       } catch (error) {
-        if (findAbort(error)) throw error;
-        const terminal = overflowError(error);
+        const terminal = contextExceededError(error);
         if (terminal) throw terminal;
         return this.tools; // Return cached tools if reconnect fails
       }
@@ -508,9 +502,8 @@ export class MCPClientWrapper {
           isError: obj?.isError === true,
         };
       } catch (error) {
-        const terminal = overflowError(error, signal);
+        const terminal = contextExceededError(error);
         if (terminal) throw terminal;
-        if (findAbort(error, signal)) throw error;
         const errorMessage =
           error instanceof Error ? error.message : String(error);
         return {
@@ -555,14 +548,14 @@ export class MCPClientWrapper {
         isError: response.isError === true,
       };
     } catch (error) {
-      const terminal = overflowError(error, signal);
+      const terminal = contextExceededError(error);
       if (terminal) throw terminal;
       // An abort is not a lost connection. The caller has already been
       // answered by the time this runs, so reconnecting and calling again
       // sends a request nobody is waiting for — and on a write tool that is a
       // second attempt at the same change. Where a wrapper is shared it is
       // worse still: the disconnect drops calls belonging to other callers.
-      if (signal?.aborted || findAbort(error)) throw error;
+      if (signal?.aborted) throw error;
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       // Auto-reconnect logic: if it fails, try to connect again and retry once
@@ -578,10 +571,10 @@ export class MCPClientWrapper {
           isError: response.isError === true,
         };
       } catch (retryError) {
-        const terminal = overflowError(retryError, signal);
+        const terminal = contextExceededError(retryError);
         if (terminal) throw terminal;
         // Same again before the session-recovery attempt.
-        if (signal?.aborted || findAbort(retryError)) throw retryError;
+        if (signal?.aborted) throw retryError;
         // Resume-with-session failed — the server may have dropped the session.
         // Clear it and try ONE fresh connect so a truly-gone session does not
         // wedge the client.
@@ -598,9 +591,8 @@ export class MCPClientWrapper {
               isError: response.isError === true,
             };
           } catch (error) {
-            const terminal = overflowError(error, signal);
+            const terminal = contextExceededError(error);
             if (terminal) throw terminal;
-            if (findAbort(error, signal)) throw error;
             /* fall through to throw */
           }
         }
@@ -609,11 +601,8 @@ export class MCPClientWrapper {
         // THROW (not return) so McpClientAdapter.callTool's catch maps it to an
         // ok:false availability McpError. Returning { error } would be wrapped
         // ok:true/isError and never escalate to fail-loud / NOT_READY.
-        throw copyErrorUsage(
-          toMcpError(
-            `${retryErrorMessage || 'Tool execution failed'} (no response after reconnect)`,
-          ),
-          retryError,
+        throw toMcpError(
+          `${retryErrorMessage || 'Tool execution failed'} (no response after reconnect)`,
         );
       }
     }
@@ -654,7 +643,11 @@ export class MCPClientWrapper {
       outcome = 'ok';
       return response;
     } catch (error) {
-      outcome = signal?.aborted || findAbort(error) ? 'aborted' : 'error';
+      outcome =
+        signal?.aborted ||
+        (error instanceof Error && error.name === 'AbortError')
+          ? 'aborted'
+          : 'error';
       try {
         if (typeof error === 'object' && error !== null) {
           for (const key of ['code', 'status'] as const) {

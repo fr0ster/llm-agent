@@ -168,48 +168,17 @@ for (const thrown of [false, true]) {
           await assert.rejects(ordinary.result, /Unavailable/);
         } else {
           const fallback = await ordinary.result;
-          assert.equal(fallback.ok, store === 'memory');
+          assert.equal(fallback.ok, !thrown);
           if (!fallback.ok) {
-            assert.equal(fallback.error.code, 'CONFIG_ERROR');
+            assert.equal(
+              fallback.error.code,
+              operation === 'query' ? 'QUERY_ERROR' : 'UPSERT_ERROR',
+            );
           }
         }
         assert.equal(ordinary.model.calls(), 1);
-        assert.equal(embeddings, 0);
+        assert.equal(embeddings, !thrown && store === 'vector' ? 1 : 0);
       });
     }
   }
-}
-
-for (const thrown of [false, true]) {
-  test(`optional RAG transforms propagate a ${thrown ? 'thrown' : 'returned'} abort wrapping overflow`, async () => {
-    const abort = new Error('Cancelled', {
-      cause: new LlmError('Prompt too long', MODEL_CONTEXT_EXCEEDED),
-    });
-    abort.name = 'AbortError';
-    const wrapped = Object.assign(new LlmError('Provider wrapper'), {
-      cause: abort,
-    });
-    const model = failingLlm(wrapped, thrown);
-    const expand = new ExpandPreprocessor(model.llm);
-    const memory = new InMemoryRag({ queryPreprocessors: [expand] });
-    for (const result of [
-      await new TranslatePreprocessor(model.llm).process(text),
-      await expand.process(text),
-      await new IntentEnricher(model.llm).enrich(text),
-      await memory.query(new TextOnlyEmbedding(text), 1),
-    ]) {
-      assert.ok(!result.ok);
-      assert.equal(result.error.code, 'ABORTED');
-      assert.equal(result.error.cause, wrapped);
-    }
-    await assert.rejects(
-      () =>
-        new IntentToolIndexing(model.llm).prepare({
-          name: 'ReadOrders',
-          description: text,
-        }),
-      { code: 'ABORTED', cause: wrapped },
-    );
-    assert.equal(model.calls(), 5);
-  });
 }

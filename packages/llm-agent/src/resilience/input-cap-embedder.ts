@@ -1,4 +1,3 @@
-import { withEmbeddingError } from '../errors/rag-error.js';
 import type {
   IEmbedder,
   IEmbedderBatch,
@@ -26,16 +25,11 @@ class InputCapEmbedder implements IEmbedder {
   }
 
   embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
-    return withEmbeddingError(
-      () =>
-        this.inner.embed(
-          options?.preserveEmbeddingInput || this.maxInputChars === 0
-            ? text
-            : text.slice(0, this.maxInputChars),
-          options,
-        ),
-      options?.signal,
-      'preserve-rejection',
+    return this.inner.embed(
+      options?.preserveEmbeddingInput || this.maxInputChars === 0
+        ? text
+        : text.slice(0, this.maxInputChars),
+      options,
     );
   }
 }
@@ -49,11 +43,7 @@ class InputCapBatchEmbedder extends InputCapEmbedder implements IEmbedderBatch {
   }
 
   embedBatch(texts: string[], options?: CallOptions): Promise<IEmbedResult[]> {
-    return withEmbeddingError(
-      () => this.inner.embedBatch(texts, options),
-      options?.signal,
-      'preserve-rejection',
-    );
+    return this.inner.embedBatch(texts, options);
   }
 }
 

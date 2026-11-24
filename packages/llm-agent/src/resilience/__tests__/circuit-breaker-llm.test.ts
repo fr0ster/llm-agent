@@ -171,28 +171,3 @@ describe('CircuitBreakerLlm — caller cancellation', () => {
     assert.equal(breaker.state, 'closed');
   });
 });
-
-it('keeps LLM_ERROR and usage for an ordinary stream throw', async () => {
-  const usage = { promptTokens: 4, completionTokens: 0, totalTokens: 4 };
-  const cause = Object.assign(new Error('Service unavailable'), { usage });
-  const inner: ILlm = {
-    async chat() {
-      throw cause;
-    },
-    async *streamChat() {
-      yield await Promise.reject(cause);
-    },
-  };
-  const llm = new CircuitBreakerLlm(
-    inner,
-    new CircuitBreaker({ failureThreshold: 3 }),
-  );
-  let chunks = 0;
-  for await (const failure of llm.streamChat([])) {
-    chunks++;
-    assert.ok(!failure.ok);
-    assert.equal(failure.error.code, 'LLM_ERROR');
-    assert.deepEqual(failure.error.usage, usage);
-  }
-  assert.equal(chunks, 1);
-});

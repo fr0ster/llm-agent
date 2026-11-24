@@ -1,4 +1,3 @@
-import { withEmbeddingError } from '@mcp-abap-adt/llm-agent';
 // Qdrant (vector-DB) store provider + a durable Postgres catalog store — the
 // PERSISTENT, recall-only serving backend for the skill plugin-host.
 //
@@ -711,14 +710,10 @@ export function makeQdrantStoreProvider(
         const createdAt = now();
         const points: QdrantPoint[] = [];
         for (const record of records) {
-          const vector = await withEmbeddingError(
-            () =>
-              embed(record.retrievalText, {
-                ...options,
-                usage: options?.usage?.with({ role: 'embedding' }),
-              }),
-            options?.signal,
-          );
+          const vector = await embed(record.retrievalText, {
+            ...options,
+            usage: options?.usage?.with({ role: 'embedding' }),
+          });
           points.push({
             id: pid(generation, record.id),
             vector,

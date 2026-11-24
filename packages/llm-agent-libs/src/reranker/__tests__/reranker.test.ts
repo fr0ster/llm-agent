@@ -72,7 +72,7 @@ describe('LlmReranker', () => {
   });
 
   for (const failure of ['returned', 'thrown']) {
-    it(`preserves a ${failure} LLM context error`, async () => {
+    it(`preserves a ${failure} LLM error as the cause`, async () => {
       const error = new LlmError('Prompt is too long', MODEL_CONTEXT_EXCEEDED);
       const llm: ILlm = {
         async chat() {
@@ -83,7 +83,7 @@ describe('LlmReranker', () => {
       };
       const r = await new LlmReranker(llm).rerank('q', sampleResults);
       assert.ok(!r.ok);
-      assert.equal(r.error, error);
+      assert.equal(r.error.cause, error);
     });
   }
 
@@ -105,7 +105,8 @@ describe('LlmReranker', () => {
       concurrency: 2,
     }).rerank('q', sampleResults);
     assert.ok(!result.ok);
-    assert.equal(result.error, overflow);
+    assert.equal(result.error.code, 'RERANK_ERROR');
+    assert.equal(result.error.cause, overflow);
   });
 
   it('returns the terminal error when an earlier parallel batch fails transiently', async () => {
@@ -258,50 +259,4 @@ describe('LlmReranker option validation', () => {
       assert.match(res.error.message, /no score for candidate 1/);
     }
   });
-});
-
-it('keeps an abort and usage when an earlier parallel rerank batch fails ordinarily', async () => {
-  const usage = { promptTokens: 1, completionTokens: 2, totalTokens: 3 };
-  const overflow = Object.assign(
-    new LlmError('Context is full', MODEL_CONTEXT_EXCEEDED),
-    { usage },
-  );
-  const abort = Object.assign(new Error('Cancelled', { cause: overflow }), {
-    name: 'AbortError',
-  });
-  let calls = 0;
-  const llm: ILlm = {
-    async chat() {
-      if (++calls === 1)
-        return { ok: false, error: new LlmError('Network unavailable') };
-      throw abort;
-    },
-    async *streamChat() {},
-  };
-  const result = await new LlmReranker(llm, {
-    batchSize: 1,
-    concurrency: 2,
-  }).rerank('q', sampleResults);
-  assert.ok(!result.ok);
-  assert.equal(result.error.code, 'ABORTED');
-  assert.deepEqual(result.error.usage, usage);
-  assert.equal(calls, 2);
-});
-
-it('preserves RERANK_ERROR and usage for an ordinary thrown chat failure', async () => {
-  const usage = { promptTokens: 4, completionTokens: 0, totalTokens: 4 };
-  const failure = Object.assign(new Error('Network unavailable'), {
-    status: 400,
-    usage,
-  });
-  const llm: ILlm = {
-    async chat() {
-      throw failure;
-    },
-    async *streamChat() {},
-  };
-  const result = await new LlmReranker(llm).rerank('q', sampleResults);
-  assert.ok(!result.ok);
-  assert.equal(result.error.code, 'RERANK_ERROR');
-  assert.deepEqual(result.error.usage, usage);
 });

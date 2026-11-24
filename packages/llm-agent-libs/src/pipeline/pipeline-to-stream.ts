@@ -7,14 +7,10 @@ import type {
   Message,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import {
-  copyErrorUsage,
-  OrchestratorError,
-  terminalRunError,
-} from '@mcp-abap-adt/llm-agent';
+import { OrchestratorError, terminalRunError } from '@mcp-abap-adt/llm-agent';
 import type { IPipeline } from '../interfaces/pipeline.js';
+import { errorUsage, withUsageAttribution } from '../logger/llm-call-usage.js';
 import { withPipelineRequestLogger } from '../logger/pipeline-request-logger.js';
-import { runInterruption } from '../utils/with-abort.js';
 
 export async function* pipelineToStream(
   pipeline: IPipeline,
@@ -42,14 +38,7 @@ export async function* pipelineToStream(
         history,
         opts,
         (chunk) => {
-          if (!chunk.ok) {
-            yieldedError = true;
-            chunk = {
-              ok: false,
-              error:
-                runInterruption(opts?.signal, [chunk.error]) ?? chunk.error,
-            };
-          }
+          if (!chunk.ok) yieldedError = true;
           chunkQueue.push(chunk);
           if (resolveWait) {
             resolveWait();
@@ -62,11 +51,13 @@ export async function* pipelineToStream(
   )
     .then(({ error }) => {
       if (error && !yieldedError) {
-        const terminal =
-          runInterruption(opts?.signal, [error]) ?? terminalRunError(error);
+        const terminal = terminalRunError(error);
         chunkQueue.push({
           ok: false,
-          error: copyErrorUsage(terminal ?? error, error),
+          error:
+            terminal && terminal !== error
+              ? withUsageAttribution(terminal, errorUsage(error))
+              : error,
         });
       }
       done = true;
@@ -79,11 +70,10 @@ export async function* pipelineToStream(
       if (!yieldedError) {
         chunkQueue.push({
           ok: false,
-          error: copyErrorUsage(
-            runInterruption(opts?.signal, [err]) ??
-              terminalRunError(err) ??
+          error: withUsageAttribution(
+            terminalRunError(err) ??
               new OrchestratorError(String(err), 'PIPELINE_ERROR'),
-            err,
+            errorUsage(err),
           ),
         });
       }

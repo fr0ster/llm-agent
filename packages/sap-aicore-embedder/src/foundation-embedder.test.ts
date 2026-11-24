@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
 import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
-import { isBatchSizeLimited } from '@mcp-abap-adt/llm-agent';
+import {
+  EMBEDDING_CONTEXT_EXCEEDED,
+  httpStatusOf,
+  isBatchSizeLimited,
+  terminalRunError,
+} from '@mcp-abap-adt/llm-agent';
 import { FoundationModelsEmbedder } from './foundation-embedder.js';
 
 const originalFetch = globalThis.fetch;
@@ -75,6 +80,56 @@ function makeGeminiEmbedder() {
   });
 }
 
+for (const [model, makeEmbedder] of [
+  ['text-embedding-3-small', makeOpenAiEmbedder],
+  ['gemini-embedding', makeGeminiEmbedder],
+] as const) {
+  for (const [status, message, code] of [
+    [400, 'context length must be a positive integer', 'RAG_ERROR'],
+    [401, 'Unauthorized', 'RAG_ERROR'],
+    [429, 'Rate limited', 'RAG_ERROR'],
+    [500, 'Service failure', 'RAG_ERROR'],
+    [
+      400,
+      'Input exceeds the maximum context length',
+      EMBEDDING_CONTEXT_EXCEEDED,
+    ],
+  ] as const) {
+    test(`foundation ${model} preserves HTTP ${status} details for ${message}`, async () => {
+      const body = { error: { message } };
+      installFetch((url) =>
+        url.includes('/v2/lm/deployments')
+          ? { body: deploymentList(model) }
+          : { body, status },
+      );
+      const embedder = makeEmbedder();
+      for (const run of [
+        () => embedder.embed('hello'),
+        () => embedder.embedBatch(['hello', 'world']),
+      ]) {
+        await assert.rejects(run, (error) => {
+          assert.ok(error instanceof Error);
+          assert.equal(error.cause, undefined);
+          assert.equal(
+            httpStatusOf(error),
+            code === EMBEDDING_CONTEXT_EXCEEDED ? status : undefined,
+          );
+          assert.partialDeepStrictEqual(
+            { ...error, message: error.message },
+            {
+              code,
+              message: `SAP AI Core embeddings call failed: ${status}  ${JSON.stringify(body)}`,
+            },
+          );
+          if (code === EMBEDDING_CONTEXT_EXCEEDED)
+            assert.equal(terminalRunError(error), error);
+          return true;
+        });
+      }
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // OpenAI / Azure path
 // ---------------------------------------------------------------------------
@@ -110,42 +165,6 @@ test('openai: decodes base64 embedding', async () => {
   const result = await makeOpenAiEmbedder().embed('hello');
   assert.deepEqual(Array.from(result.vector), [1, 2, 3]);
 });
-
-for (const [model, makeEmbedder] of [
-  ['text-embedding-3-small', makeOpenAiEmbedder],
-  ['gemini-embedding', makeGeminiEmbedder],
-] as const) {
-  for (const [status, message, code] of [
-    [400, 'context length must be a positive integer', 'RAG_ERROR'],
-    [
-      400,
-      'This model does not support the context window parameter',
-      'RAG_ERROR',
-    ],
-    [401, 'Unauthorized', 'RAG_ERROR'],
-    [429, 'Rate limited', 'RAG_ERROR'],
-    [500, 'Upstream rejected request', 'RAG_ERROR'],
-    [
-      400,
-      'Input exceeds the maximum context length',
-      'EMBEDDING_CONTEXT_EXCEEDED',
-    ],
-  ] as const) {
-    test(`foundation ${model} reports ${code} for HTTP ${status}: ${message}`, async () => {
-      installFetch((url) => {
-        if (url.includes('/v2/lm/deployments'))
-          return { body: deploymentList(model) };
-        return { body: { error: { message } }, status };
-      });
-      const embedder = makeEmbedder();
-      await assert.rejects(embedder.embed('hello'), { code, status });
-      await assert.rejects(embedder.embedBatch(['hello', 'world']), {
-        code,
-        status,
-      });
-    });
-  }
-}
 
 test('openai: embedBatch sorts by index and returns vectors in input order', async () => {
   installFetch((url) => {

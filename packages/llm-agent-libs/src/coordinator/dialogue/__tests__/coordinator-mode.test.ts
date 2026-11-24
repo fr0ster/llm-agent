@@ -351,8 +351,8 @@ test('abort during plan_create authoring stores nothing', async () => {
       { goal: 'read' },
       { signal: controller.signal },
     );
-    assert.ok(!result.ok);
-    assert.equal(result.error.code, 'ABORTED');
+    assert.ok(result.ok && result.value.isError);
+    assert.match(text(result), /aborted/);
     assert.deepEqual(session.snapshot(), before);
     assert.equal(await store.load('abort-author'), undefined);
   } finally {

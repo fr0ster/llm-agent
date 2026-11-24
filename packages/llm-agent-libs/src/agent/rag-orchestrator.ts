@@ -10,20 +10,17 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   collectWithContextOverflow,
-  copyErrorUsage,
+  contextExceededError,
   mergeOfferedTools,
   OrchestratorError,
-  overflowError,
   QueryEmbedding,
   RagAccessDeniedError,
   TextOnlyEmbedding,
-  toAbortError,
   toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { callerResolutionKey } from '../policy/caller-identity.js';
 import { denyRagAccess, ownerBoundQuery } from '../rag/owner-bound-query.js';
 import type { ISpan } from '../tracer/types.js';
-import { runInterruption } from '../utils/with-abort.js';
 import { toEnglishForRag } from './rag-helpers.js';
 import type {
   IRagOrchestrator,
@@ -109,15 +106,12 @@ export class RagOrchestrator implements IRagOrchestrator {
             );
             if (expandResult.ok) translatedText = expandResult.value;
             else {
-              const terminal =
-                toAbortError(expandResult.error, opts?.signal) ??
-                overflowError(expandResult.error);
+              const terminal = contextExceededError(expandResult.error);
               if (terminal) return { ok: false, error: terminal };
             }
           }
         } catch (error) {
-          const terminal =
-            toAbortError(error, opts?.signal) ?? overflowError(error);
+          const terminal = contextExceededError(error);
           if (terminal) return { ok: false, error: terminal };
           throw error;
         }
@@ -157,6 +151,7 @@ export class RagOrchestrator implements IRagOrchestrator {
           ).then((r) => ({ name, result: r }));
         }),
         ({ result }) => (result.ok ? undefined : result.error),
+        { rejectImmediately: true },
       );
       ragSpan.end();
       if (!queries.ok) return queries;
@@ -186,13 +181,12 @@ export class RagOrchestrator implements IRagOrchestrator {
               opts,
             );
             if (rr.ok) return { name, results: rr.value };
-            const aborted = toAbortError(rr.error, opts?.signal);
-            if (aborted) throw aborted;
             return { name, results, error: rr.error };
           }
           return { name, results };
         }),
         ({ error }) => error,
+        { rejectImmediately: true },
       );
       if (!reranked.ok) return reranked;
       const rerankedMap: Record<string, RagResult[]> = {};
@@ -303,6 +297,7 @@ export class RagOrchestrator implements IRagOrchestrator {
               );
             }),
             (result) => (result.ok ? undefined : result.error),
+            { rejectImmediately: true },
           );
           if (!fallback.ok) return fallback;
           for (const result of fallback.value) {
@@ -327,9 +322,7 @@ export class RagOrchestrator implements IRagOrchestrator {
 
         const allSkillsResult = await this.deps.skillManager.listSkills(opts);
         if (!allSkillsResult.ok) {
-          const overflow =
-            toAbortError(allSkillsResult.error, opts?.signal) ??
-            overflowError(allSkillsResult.error);
+          const overflow = contextExceededError(allSkillsResult.error);
           if (overflow) return { ok: false, error: overflow };
         } else {
           const allSkills = allSkillsResult.value;
@@ -338,9 +331,7 @@ export class RagOrchestrator implements IRagOrchestrator {
           for (const skill of matched) {
             const contentResult = await skill.getContent(undefined, opts);
             if (!contentResult.ok) {
-              const overflow =
-                toAbortError(contentResult.error, opts?.signal) ??
-                overflowError(contentResult.error);
+              const overflow = contextExceededError(contentResult.error);
               if (overflow) return { ok: false, error: overflow };
             } else if (contentResult.value) {
               contentParts.push(
@@ -412,13 +403,10 @@ export class RagOrchestrator implements IRagOrchestrator {
       return {
         ok: false,
         error:
-          runInterruption(opts?.signal, [assembleResult.error]) ??
-          copyErrorUsage(
-            new OrchestratorError(
-              assembleResult.error.message,
-              'ASSEMBLER_ERROR',
-            ),
-            assembleResult.error,
+          contextExceededError(assembleResult.error) ??
+          new OrchestratorError(
+            assembleResult.error.message,
+            'ASSEMBLER_ERROR',
           ),
       };
     }
@@ -499,13 +487,10 @@ export class RagOrchestrator implements IRagOrchestrator {
         return {
           ok: false,
           error:
-            runInterruption(opts?.signal, [classifyResult.error]) ??
-            copyErrorUsage(
-              new OrchestratorError(
-                classifyResult.error.message,
-                'CLASSIFIER_ERROR',
-              ),
-              classifyResult.error,
+            contextExceededError(classifyResult.error) ??
+            new OrchestratorError(
+              classifyResult.error.message,
+              'CLASSIFIER_ERROR',
             ),
         };
       }

@@ -10,7 +10,7 @@ import type {
   SmartAgentResponse,
   StopReason,
 } from '@mcp-abap-adt/llm-agent';
-import { overflowError } from '../errors/terminal-run-error.js';
+import { contextExceededError } from '../errors/terminal-run-error.js';
 import {
   AdapterValidationError,
   type ApiRequestContext,
@@ -152,7 +152,7 @@ export class OpenAiApiAdapter implements ILlmApiAdapter {
   // -------------------------------------------------------------------------
 
   formatError(error: OrchestratorError, _context: ApiRequestContext): unknown {
-    const failure = overflowError(error) ?? error;
+    const failure = contextExceededError(error) ?? error;
     return {
       error: {
         message: failure.message,
@@ -195,7 +195,7 @@ export class OpenAiApiAdapter implements ILlmApiAdapter {
     for await (const chunk of source) {
       // Error chunk
       if (!chunk.ok) {
-        const terminal = overflowError(chunk.error);
+        const terminal = contextExceededError(chunk.error);
         if (terminal) {
           yield { data: JSON.stringify(this.formatError(terminal, context)) };
           return;

@@ -9,9 +9,8 @@ import type {
   PlannerMemoryEntry,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  abortRunError,
   collectWithContextOverflow,
-  overflowError,
+  contextExceededError,
   QueryEmbedding,
   scopedUsage,
   terminalRunError,
@@ -174,7 +173,7 @@ export async function retrievePlannerContext(
                   { ...scoped, ragFilter: { sessionId } },
                 );
                 if (!result.ok) {
-                  const overflow = overflowError(result.error);
+                  const overflow = contextExceededError(result.error);
                   if (overflow) throw overflow;
                 }
                 signal.throwIfAborted();
@@ -220,7 +219,7 @@ export async function retrievePlannerContext(
                   .slice(0, config.memoryK ?? 8);
               } catch (error) {
                 const terminal =
-                  overflowError(error) ??
+                  contextExceededError(error) ??
                   (!signal.aborted && terminalRunError(error));
                 if (terminal) throw terminal;
                 warn('Planner memory retrieval failed or timed out');
@@ -253,7 +252,7 @@ export async function retrievePlannerContext(
                 output.knowledge = knowledgeResults.flat();
               } catch (error) {
                 const terminal =
-                  overflowError(error) ??
+                  contextExceededError(error) ??
                   (!signal.aborted && terminalRunError(error));
                 if (terminal) throw terminal;
                 warn(
@@ -272,10 +271,8 @@ export async function retrievePlannerContext(
     );
   } catch (error) {
     const terminal =
-      overflowError(error) ??
-      (options.signal?.aborted
-        ? abortRunError(options.signal.reason, error)
-        : undefined) ??
+      contextExceededError(error) ??
+      terminalRunError(options.signal?.reason) ??
       terminalRunError(error);
     if (terminal) throw terminal;
     warn('Planner retrieval deadline reached');

@@ -14,13 +14,7 @@ import type {
   ModelUsageEntry,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import {
-  addCacheTokenUsage,
-  errorUsage,
-  withUsageAttribution,
-} from '@mcp-abap-adt/llm-agent';
-
-export { errorUsage, withUsageAttribution };
+import { addCacheTokenUsage } from '@mcp-abap-adt/llm-agent';
 
 export function usageCallRecords(
   attribution: LlmUsageAttribution,
@@ -164,6 +158,45 @@ export function completeUsageCalls(
     }
   }
   return calls;
+}
+
+/** Read telemetry from external errors without copying their error code or cause. */
+export function errorUsage<T>(error: T): LlmUsageAttribution {
+  if (typeof error !== 'object' || error === null) return {};
+  const { usage, usageByModel, usageCalls, model } =
+    error as LlmUsageAttribution;
+  return {
+    ...(usage && { usage }),
+    ...(usageByModel && { usageByModel }),
+    ...(usageCalls && { usageCalls }),
+    ...(model !== undefined && { model }),
+  };
+}
+
+/** Keep the error type and telemetry without changing a provider-owned error. */
+export function withUsageAttribution<T>(
+  error: T,
+  attribution: LlmUsageAttribution,
+): T {
+  if (
+    typeof error !== 'object' ||
+    error === null ||
+    Object.keys(attribution).length === 0
+  )
+    return error;
+  const copy =
+    error instanceof DOMException
+      ? new DOMException(error.message, error.name)
+      : error instanceof Error
+        ? new Error()
+        : {};
+  return Object.defineProperties(
+    Object.setPrototypeOf(copy, Object.getPrototypeOf(error)),
+    {
+      ...Object.getOwnPropertyDescriptors(error),
+      ...Object.getOwnPropertyDescriptors(attribution),
+    },
+  ) as T;
 }
 
 export function withUsageCalls<T>(

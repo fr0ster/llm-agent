@@ -1,9 +1,4 @@
-import {
-  copyErrorUsage,
-  McpError,
-  overflowError,
-  toAbortError,
-} from '@mcp-abap-adt/llm-agent';
+import { McpError } from '@mcp-abap-adt/llm-agent';
 
 /** Flatten an error's message + code across its `cause` chain (Node `fetch`
  *  wraps the real transport error in `.cause`; AggregateError nests in
@@ -38,10 +33,8 @@ function collectErrorText(err: unknown, depth = 0): string {
  * Node `fetch failed` shape whose real cause (ECONNREFUSED / ENOTFOUND / …)
  * lives on `err.cause`.
  */
-export function toMcpError<T>(err: T, signal?: AbortSignal): McpError {
-  const terminal = toAbortError(err, signal) ?? overflowError(err);
-  if (terminal) return terminal;
-  if (err instanceof McpError) return copyErrorUsage(err, err);
+export function toMcpError(err: unknown): McpError {
+  if (err instanceof McpError) return err;
   const top = err instanceof Error ? err.message : String(err);
   const m = collectErrorText(err) || String(err).toLowerCase();
 
@@ -93,5 +86,5 @@ export function toMcpError<T>(err: T, signal?: AbortSignal): McpError {
   )
     code = 'MCP_NOT_CONNECTED';
 
-  return copyErrorUsage(new McpError(top || 'MCP transport error', code), err);
+  return new McpError(top || 'MCP transport error', code);
 }

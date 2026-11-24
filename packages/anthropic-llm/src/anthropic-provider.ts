@@ -15,15 +15,11 @@ import type {
 import {
   BaseLLMProvider,
   type beginLlmRequest,
-  copyErrorUsage,
-  findAbort,
   LlmError,
   MODEL_CONTEXT_EXCEEDED,
-  overflowError,
   requestShape,
   type ShapeMessage,
   startOperation,
-  toAbortError,
 } from '@mcp-abap-adt/llm-agent';
 import axios, { type AxiosInstance } from 'axios';
 
@@ -496,23 +492,6 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
 
       return response;
     } catch (error) {
-      if (options?.signal?.aborted && Object.is(error, options.signal.reason))
-        throw error;
-      const interruption =
-        toAbortError(error, options?.signal) ?? overflowError(error);
-      if (interruption) {
-        throw options?.apiKey === undefined
-          ? interruption
-          : copyErrorUsage(
-              Object.assign(
-                new LlmError('Anthropic API error', interruption.code),
-                {
-                  status: interruption.status,
-                },
-              ),
-              interruption,
-            );
-      }
       const transport = axios.isAxiosError<AnthropicErrorResponse>(error)
         ? error
         : undefined;
@@ -521,8 +500,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         transport?.response?.status === 400 && isContextOverflow(providerError);
       if (!overflow) options?.signal?.throwIfAborted();
       if (options?.apiKey !== undefined) {
-        if (overflow)
-          throw copyErrorUsage(contextOverflow('Anthropic API error'), error);
+        if (overflow) throw contextOverflow('Anthropic API error');
         throw this.credentialSafeError(error, 'Anthropic API error');
       }
       const message = transport
@@ -530,11 +508,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         : error instanceof Error
           ? error.message
           : String(error);
-      if (overflow)
-        throw copyErrorUsage(
-          contextOverflow(`Anthropic API error: ${message}`),
-          error,
-        );
+      if (overflow) throw contextOverflow(`Anthropic API error: ${message}`);
       throw this.preserveThrottled(
         error,
         new Error(`Anthropic API error: ${message}`),
@@ -857,22 +831,6 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       }
     } catch (error) {
       streamError = error instanceof Error ? error : String(error);
-      if (options?.signal?.aborted && Object.is(error, options.signal.reason))
-        throw error;
-      const interruption =
-        toAbortError(error, options?.signal) ?? overflowError(error);
-      if (interruption) {
-        if (options?.apiKey === undefined) throw interruption;
-        throw copyErrorUsage(
-          Object.assign(
-            new LlmError('Anthropic streaming error', interruption.code),
-            {
-              status: interruption.status,
-            },
-          ),
-          interruption,
-        );
-      }
       if (
         options?.apiKey !== undefined &&
         !(error instanceof LlmError && error.code === MODEL_CONTEXT_EXCEEDED)
@@ -883,7 +841,8 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     } finally {
       handle.end({
         outcome: streamError
-          ? options?.signal?.aborted || findAbort(streamError)
+          ? options?.signal?.aborted ||
+            (streamError instanceof Error && streamError.name === 'AbortError')
             ? 'aborted'
             : 'error'
           : completed

@@ -26,11 +26,9 @@ import {
   type Result,
   ragCollectionNotFound,
   ragOwnerKeys,
-  toRagError,
   validateRagCatalogPatch,
   validateRagOwner,
   validateRagStoreName,
-  withEmbeddingError,
 } from '@mcp-abap-adt/llm-agent';
 import {
   type AccessPayload,
@@ -201,7 +199,10 @@ export class QdrantRagProvider
     } catch (err) {
       return {
         ok: false,
-        error: toRagError(err, 'RAG_CREATE_ERROR'),
+        error:
+          err instanceof RagError
+            ? err
+            : new RagError(String(err), 'RAG_CREATE_ERROR'),
       };
     }
   }
@@ -585,11 +586,7 @@ export class QdrantRagProvider
   ): Promise<Result<void, RagError>> {
     const dimension =
       opts.dimension ??
-      (
-        await withEmbeddingError(() =>
-          this.embedder.embedDocument(DIMENSION_PROBE),
-        )
-      ).vector.length;
+      (await this.embedder.embedDocument(DIMENSION_PROBE)).vector.length;
     const res = await this.request(`/collections/${name}`, {
       method: 'PUT',
       body: JSON.stringify({

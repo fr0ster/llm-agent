@@ -209,7 +209,7 @@ export class CopilotProvider implements ILlm {
       if (signal.aborted) throw aborted();
       return { ok: true, value: await work(signal) };
     } catch (error) {
-      return { ok: false, error: sdkError(error, signal) };
+      return { ok: false, error: signal.aborted ? aborted() : sdkError(error) };
     } finally {
       finished.resolve();
     }
@@ -295,7 +295,7 @@ export class CopilotProvider implements ILlm {
           return response;
         } catch (error) {
           void this.closeSession(current, true);
-          const failure = sdkError(error, signal);
+          const failure = signal.aborted ? aborted() : sdkError(error);
           if (failure instanceof CopilotThrottleError && streamed)
             emit({ content: '', reset: true });
           throw failure;

@@ -26,7 +26,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   addTokenUsage,
-  overflowError,
+  contextExceededError,
   type PlannerMessageUsage,
   type SmartAgentError,
   scopedUsage,
@@ -1148,7 +1148,7 @@ export class DialogueSession {
               usage: this.turnUsage,
             }),
             onTerminalError: (error) => {
-              toolFailure = overflowError(error) ?? toolFailure ?? error;
+              toolFailure = contextExceededError(error) ?? toolFailure ?? error;
               callStop.abort();
             },
             beforeTool: (name) => {
@@ -1226,7 +1226,7 @@ export class DialogueSession {
                     signal: user?.opts.signal,
                   });
                   if (!result.ok) {
-                    const overflow = overflowError(result.error);
+                    const overflow = contextExceededError(result.error);
                     if (overflow) throw overflow;
                     throw new Error(
                       `${result.error.code}: ${result.error.message}`,
@@ -1353,7 +1353,8 @@ export class DialogueSession {
               },
             }),
         ).catch((error: Error) => {
-          const overflow = overflowError(toolFailure) ?? overflowError(error);
+          const overflow =
+            contextExceededError(toolFailure) ?? contextExceededError(error);
           if (overflow) throw overflow;
           if (toolFailure) throw toolFailure;
           assertRequestCanContinue();
@@ -1378,8 +1379,8 @@ export class DialogueSession {
         });
         this.plannerCall = undefined;
         const overflow =
-          overflowError(toolFailure) ??
-          (result.ok ? undefined : overflowError(result.error));
+          contextExceededError(toolFailure) ??
+          (result.ok ? undefined : contextExceededError(result.error));
         if (overflow) throw overflow;
         if (toolFailure) throw toolFailure;
         assertRequestCanContinue();

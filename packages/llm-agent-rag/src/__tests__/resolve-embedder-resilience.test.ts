@@ -10,7 +10,7 @@ import { prefetchEmbedderFactories } from '../embedder-factories.js';
 import { composeEmbedder, resolveEmbedder } from '../rag-factories.js';
 
 for (const provider of ['openai', 'ollama'] as const) {
-  it(`resolved ${provider} surfaces the first provider failure by default`, async (t) => {
+  it(`resolved ${provider} retains retries through composition`, async (t) => {
     await prefetchEmbedderFactories([provider]);
     const waits: number[] = [];
     t.mock.method(DefaultWaitStrategy.prototype, 'wait', async (ms: number) => {
@@ -33,12 +33,9 @@ for (const provider of ['openai', 'ollama'] as const) {
         ? { ...cfg, provider, credential: staticApiKey('test') }
         : { ...cfg, provider },
     );
-    await assert.rejects(embedder.embed('q'), {
-      code: 'EMBED_ERROR',
-      status: 503,
-    });
-    assert.equal(requests, 1);
-    assert.deepEqual(waits, []);
+    assert.deepEqual((await embedder.embed('q')).vector, [1]);
+    assert.equal(requests, 2);
+    assert.deepEqual(waits, [2000]);
     assert.equal(getResilienceMetadata(embedder)?.maxBatchSize, 100);
   });
 }

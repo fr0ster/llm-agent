@@ -1,42 +1,4 @@
-import {
-  abortRunError,
-  findAbort,
-  overflowError,
-  type SmartAgentError,
-} from '@mcp-abap-adt/llm-agent';
-
-/** Recognize cancellation before inspecting causes for independent overflows. */
-export function runInterruption<T>(
-  signal: AbortSignal | undefined,
-  errors: readonly T[] = [],
-  mode?: 'throw-signal-abort',
-): SmartAgentError | undefined {
-  let aborted: SmartAgentError | undefined;
-  let rethrow: (() => never) | undefined;
-  for (const error of errors) {
-    const abort = findAbort(error, signal);
-    if (abort) {
-      aborted ??= abortRunError(
-        abort.fromSignal ? signal?.reason : abort.reason,
-        error,
-      );
-      if (abort.fromSignal)
-        rethrow ??= () => {
-          throw error;
-        };
-    } else {
-      const overflow = overflowError(error);
-      if (overflow) return overflow;
-    }
-  }
-  if (mode === 'throw-signal-abort' && signal?.aborted) {
-    if (rethrow) rethrow();
-    signal.throwIfAborted();
-  }
-  return (
-    aborted ?? (signal?.aborted ? abortRunError(signal.reason) : undefined)
-  );
-}
+import type { SmartAgentError } from '@mcp-abap-adt/llm-agent';
 
 /**
  * Race `promise` against the caller's abort signal. The `abort` listener is

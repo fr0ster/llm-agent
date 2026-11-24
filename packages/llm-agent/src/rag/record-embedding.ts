@@ -1,7 +1,5 @@
 import { setImmediate } from 'node:timers/promises';
-import { findAbort } from '../errors/abort-run-error.js';
-import { withEmbeddingError } from '../errors/rag-error.js';
-import { overflowError } from '../errors/terminal-run-error.js';
+import { contextExceededError } from '../errors/terminal-run-error.js';
 import {
   type IDocumentEmbedder,
   type IEmbedResult,
@@ -67,9 +65,8 @@ export async function retryRagThrottle<T>(
     try {
       return await call();
     } catch (error) {
-      const overflow = overflowError(error, signal);
+      const overflow = contextExceededError(error);
       if (overflow) throw overflow;
-      if (findAbort(error, signal)) throw error;
       signal?.throwIfAborted();
       const response =
         error !== null && typeof error === 'object' ? error : undefined;
@@ -118,10 +115,7 @@ export async function embedDocumentRecords(
     usage: options?.usage?.with({ role: 'embedding' }),
   };
   const run = <T>(request: () => Promise<T>) =>
-    retryRagThrottle(
-      () => withEmbeddingError(request, callOptions.signal),
-      callOptions.signal,
-    );
+    retryRagThrottle(request, options?.signal);
   const getCapacity = embedder.getMaxInputChars?.bind(embedder);
   const size =
     (getCapacity && (await run(() => getCapacity(callOptions)))) ??

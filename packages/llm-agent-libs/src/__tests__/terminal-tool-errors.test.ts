@@ -4,7 +4,6 @@ import { setImmediate } from 'node:timers/promises';
 import {
   buildRagCollectionToolEntries,
   DirectEditStrategy,
-  EMBEDDING_CONTEXT_EXCEEDED,
   GlobalUniqueIdStrategy,
   type ICoordinatorContext,
   type ILlm,
@@ -16,10 +15,8 @@ import {
   MODEL_CONTEXT_EXCEEDED,
   RagError,
   SimpleRagRegistry,
-  symmetricEmbedder,
   TokenLedger,
   type ToolRound,
-  VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import {
   MCPClientWrapper,
@@ -30,7 +27,6 @@ import { LlmClassifier } from '../classifier/llm-classifier.js';
 import { ContextAssembler } from '../context/context-assembler.js';
 import { SelfDispatch } from '../coordinator/dispatch/self.js';
 import { CyclicReActExecutor } from '../coordinator/stepper/cyclic-react-executor.js';
-import { DefaultRequestLogger } from '../logger/default-request-logger.js';
 import { LegacyAccumulateContextStrategy } from '../pipeline/context/tool-loop-context/index.js';
 import { DefaultPipeline } from '../pipeline/default-pipeline.js';
 import { LlmReranker } from '../reranker/llm-reranker.js';
@@ -44,56 +40,24 @@ import {
 const tool = { name: 'Work', description: 'Work', inputSchema: {} };
 
 for (const pipeline of [false, true]) {
-  for (const scenario of [
-    'terminal',
-    'embedding',
-    'SDK embedding',
-    'mixed',
-    'mixed abort',
-    'ordinary',
-  ]) {
-    test(`${pipeline ? 'pipeline' : 'direct'} handles ${scenario} rag_add failures through embedded MCP`, async (t) => {
-      const mixed = scenario === 'mixed' || scenario === 'mixed abort';
-      const externalTools = mixed ? [tool] : [];
+  for (const scenario of ['terminal', 'mixed', 'ordinary']) {
+    test(`${pipeline ? 'pipeline' : 'direct'} handles ${scenario} rag_add failures through embedded MCP`, async () => {
+      const externalTools = scenario === 'mixed' ? [tool] : [];
       const options = { ...testCallOptions(), externalTools };
       const failure = new LlmError(
         'Prompt is too long',
         MODEL_CONTEXT_EXCEEDED,
       );
-      const abort = new Error('Cancelled', { cause: failure });
-      abort.name = 'AbortError';
       const ordinary = new RagError('Write failed');
       const enricher: ILlm = {
         async chat() {
-          if (scenario === 'mixed abort') throw abort;
           return { ok: false, error: failure };
         },
         async *streamChat() {},
       };
-      const embeddingOverflow = new RagError(
-        'Embedding input is too long',
-        EMBEDDING_CONTEXT_EXCEEDED,
-        { status: 400 },
-      );
-      const embeddingFailure =
-        scenario === 'SDK embedding'
-          ? Object.assign(new Error('input too long'), { status: 400 })
-          : embeddingOverflow;
-      const documentEmbedding =
-        scenario === 'embedding' || scenario === 'SDK embedding';
-      let embeddingCalls = 0;
-      const rag = documentEmbedding
-        ? new VectorRag(
-            symmetricEmbedder({
-              async embed() {
-                embeddingCalls++;
-                throw embeddingFailure;
-              },
-            }),
-          )
-        : new InMemoryRag({
-            documentEnrichers: [new IntentEnricher(enricher)],
-          });
+      const rag = new InMemoryRag({
+        documentEnrichers: [new IntentEnricher(enricher)],
+      });
       const writer = rag.writer();
       const registry = new SimpleRagRegistry();
       registry.register(
@@ -132,7 +96,6 @@ for (const pipeline of [false, true]) {
         },
       });
       await wrapper.connect();
-      t.after(() => wrapper.disconnect());
       const { deps, llm } = makeDefaultDeps({
         assembler: new ContextAssembler(),
         mcpClients: [new McpClientAdapter(wrapper)],
@@ -166,7 +129,7 @@ for (const pipeline of [false, true]) {
       }
       const agent = new SmartAgent(deps, config);
       let result = await agent.process('Add an entry to notes', options);
-      if (mixed) {
+      if (scenario === 'mixed') {
         assert.ok(result.ok);
         const externalCall = result.value.toolCalls?.[0];
         assert.ok(externalCall);
@@ -186,45 +149,26 @@ for (const pipeline of [false, true]) {
         );
       } else {
         assert.ok(!result.ok);
-        const expected = documentEmbedding ? embeddingOverflow : failure;
-        assert.equal(
-          result.error.code,
-          scenario === 'mixed abort' ? 'ABORTED' : expected.code,
-        );
-        if (scenario === 'mixed abort') {
-          assert.equal(result.error.message, abort.message);
-        } else if (scenario === 'SDK embedding') {
-          assert.equal(result.error.cause, embeddingFailure);
-          assert.equal(result.error.status, 400);
-        } else {
-          assert.equal(result.error.cause, expected);
-        }
+        assert.equal(result.error.code, MODEL_CONTEXT_EXCEEDED);
+        assert.equal(result.error.cause, failure);
         assert.equal(llm.callCount, 1);
-        assert.equal(embeddingCalls, documentEmbedding ? 1 : 0);
       }
     });
   }
 
   for (const scenario of ['terminal-first', 'terminal-last', 'ordinary']) {
-    const mode = pipeline ? 'pipeline' : 'direct';
-    const name =
-      scenario === 'ordinary'
-        ? `${mode} surfaces the first ordinary RAG failure`
-        : `${mode} aggregates RAG queries with ${scenario} failures`;
-    test(name, async () => {
+    test(`${pipeline ? 'pipeline' : 'direct'} aggregates RAG queries with ${scenario} failures`, async () => {
       const first = new RagError('First query failed', 'QUERY_ERROR');
       const last = new RagError('Last query failed', 'QUERY_ERROR');
       const terminal = new RagError(
         'Prompt is too long',
         MODEL_CONTEXT_EXCEEDED,
       );
-      const queries: string[] = [];
       const { deps, llm } = makeDefaultDeps({
         ragStores: {
           first: {
             ...makeRag(),
             async query() {
-              queries.push('first');
               return {
                 ok: false,
                 error: scenario === 'terminal-first' ? terminal : first,
@@ -234,7 +178,6 @@ for (const pipeline of [false, true]) {
           last: {
             ...makeRag(),
             async query() {
-              queries.push('last');
               await setImmediate();
               return {
                 ok: false,
@@ -249,52 +192,19 @@ for (const pipeline of [false, true]) {
         flow.initialize(deps);
         deps.pipeline = flow;
       }
-      const errors: Error[] = [];
-      for await (const chunk of new SmartAgent(deps, {}).streamProcess(
+      const result = await new SmartAgent(deps, {}).process(
         'Find notes',
         testCallOptions(),
-      )) {
-        if (!chunk.ok) errors.push(chunk.error);
-      }
-      assert.equal(errors.length, 1);
-      assert.equal(errors[0], scenario === 'ordinary' ? first : terminal);
-      assert.deepEqual(queries, ['first', 'last']);
+      );
+      assert.ok(!result.ok);
+      const ordinary = pipeline ? last : first;
+      assert.equal(result.error, scenario === 'ordinary' ? ordinary : terminal);
       assert.equal(llm.callCount, 0);
     });
   }
 }
 
 for (const pipeline of [false, true]) {
-  test(`${pipeline ? 'pipeline' : 'direct'} propagates a returned reranker abort before reusing candidates`, async () => {
-    const abort = new Error('Cancelled', {
-      cause: new LlmError('Prompt too long', MODEL_CONTEXT_EXCEEDED),
-    });
-    abort.name = 'AbortError';
-    const error = new RagError('Reranker failed', 'RERANK_ERROR', {
-      cause: abort,
-    });
-    const { deps, llm } = makeDefaultDeps({
-      ragStores: { docs: makeRag([{ text: 'doc', metadata: {}, score: 1 }]) },
-      reranker: {
-        async rerank() {
-          return { ok: false, error };
-        },
-      },
-    });
-    if (pipeline) {
-      const flow = new DefaultPipeline();
-      flow.initialize(deps);
-      deps.pipeline = flow;
-    }
-    const result = await new SmartAgent(deps, {}).process(
-      'Find the documentation',
-      testCallOptions(),
-    );
-    assert.ok(!result.ok);
-    assert.equal(result.error.code, 'ABORTED');
-    assert.equal(llm.callCount, 0);
-  });
-
   for (const stage of ['classifier', 'translation', 'reranker']) {
     test(`${pipeline ? 'pipeline' : 'direct'} surfaces context overflow from the ${stage}`, async () => {
       const error = new LlmError('Prompt is too long', MODEL_CONTEXT_EXCEEDED);
@@ -588,62 +498,4 @@ for (const failure of [
     );
     assert.equal(inputs.length, 1);
   });
-}
-
-for (const pipeline of [false, true]) {
-  for (const thrown of [false, true]) {
-    for (const aborted of [false, true]) {
-      const mode = pipeline ? 'pipeline' : 'direct';
-      test(`${mode} meters a ${thrown ? 'thrown' : 'returned'} classifier ${aborted ? 'abort' : 'error'} once`, async () => {
-        const usage = { promptTokens: 1, completionTokens: 2, totalTokens: 3 };
-        const cause = new Error('Classifier provider failed', {
-          cause: aborted
-            ? new LlmError('Prompt too long', MODEL_CONTEXT_EXCEEDED)
-            : undefined,
-        });
-        if (aborted) cause.name = 'AbortError';
-        Object.assign(cause, { usage, model: 'classifier-model' });
-        const returned = Object.assign(new LlmError('Provider response'), {
-          cause,
-        });
-        const logger = new DefaultRequestLogger();
-        const { deps, llm } = makeDefaultDeps({
-          classifier: new LlmClassifier(
-            {
-              async chat() {
-                if (thrown) throw cause;
-                return { ok: false, error: returned };
-              },
-              async *streamChat() {},
-            },
-            undefined,
-            logger,
-          ),
-        });
-        deps.requestLogger = logger;
-        const config = { classificationEnabled: true };
-        if (pipeline) {
-          const flow = new DefaultPipeline();
-          flow.initialize({ ...deps, agentConfig: config });
-          deps.pipeline = flow;
-        }
-        const traceId = 'classifier-failure';
-        const result = await new SmartAgent(deps, config).process(
-          'Classify this request',
-          testCallOptions({ trace: { traceId } }),
-        );
-        assert.ok(!result.ok);
-        assert.equal(
-          result.error.code,
-          aborted ? 'ABORTED' : 'CLASSIFIER_ERROR',
-        );
-        assert.deepEqual(result.error.usage, usage);
-        assert.deepEqual(logger.getSummary(traceId).totals, {
-          ...usage,
-          requests: 1,
-        });
-        assert.equal(llm.callCount, 0);
-      });
-    }
-  }
 }

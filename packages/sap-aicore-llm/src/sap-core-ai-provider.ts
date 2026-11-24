@@ -23,19 +23,15 @@ import type {
 import {
   BaseLLMProvider,
   type beginLlmRequest,
-  copyErrorUsage,
-  findAbort,
   httpStatusOf,
   LlmError,
   type LlmRequestFacts,
   type LlmRequestHandle,
   MODEL_CONTEXT_EXCEEDED,
-  overflowError,
   requestShape,
   retryAfterSecondsOf,
   type ShapeMessage,
   startOperation,
-  toAbortError,
 } from '@mcp-abap-adt/llm-agent';
 import {
   type ChatCompletionTool,
@@ -421,7 +417,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       const detail = SapCoreAIProvider.extractErrorDetail(error);
       const message = `SAP AI SDK API error: ${detail}`;
       const wrapped =
-        sapContextOverflow(error, message, options?.signal) ??
+        sapContextOverflow(error, message) ??
         this.preserveThrottled(error, new Error(message));
       this.log?.error('SAP AI SDK API error', {
         status: httpStatusOf(wrapped),
@@ -662,7 +658,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       const detail = SapCoreAIProvider.extractErrorDetail(error);
       const message = `SAP AI SDK streaming error: ${detail}`;
       const wrapped =
-        sapContextOverflow(error, message, options?.signal) ??
+        sapContextOverflow(error, message) ??
         this.preserveThrottled(error, new Error(message));
       this.log?.error('SAP AI SDK streaming error', {
         model,
@@ -680,7 +676,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       request?.end({
         ...facts,
         outcome: failure
-          ? options?.signal?.aborted || findAbort(failure)
+          ? options?.signal?.aborted || isAbortError(failure)
             ? 'aborted'
             : 'error'
           : completed
@@ -1062,14 +1058,7 @@ function tokenFacts(usage?: {
 function sapContextOverflow<T>(
   error: T,
   message: string,
-  signal?: AbortSignal,
 ): LlmError | undefined {
-  const interruption = toAbortError(error, signal) ?? overflowError(error);
-  if (interruption)
-    return copyErrorUsage(
-      new LlmError(message, interruption.code),
-      interruption,
-    );
   if (!error || typeof error !== 'object') return;
   const status = httpStatusOf(error);
   const cause = 'cause' in error ? error.cause : undefined;
@@ -1086,12 +1075,9 @@ function sapContextOverflow<T>(
         'error' in body &&
         isProviderContextOverflow(body.error)
       ) {
-        return copyErrorUsage(
-          Object.assign(new LlmError(message, MODEL_CONTEXT_EXCEEDED), {
-            status: 400,
-          }),
-          error,
-        );
+        return Object.assign(new LlmError(message, MODEL_CONTEXT_EXCEEDED), {
+          status: 400,
+        });
       }
     }
     // The SDK serializes the SSE error object into the cause's message.
@@ -1107,12 +1093,9 @@ function sapContextOverflow<T>(
             JSON.parse(current.message.slice(prefix.length)),
           )
         ) {
-          return copyErrorUsage(
-            Object.assign(new LlmError(message, MODEL_CONTEXT_EXCEEDED), {
-              status: 400,
-            }),
-            error,
-          );
+          return Object.assign(new LlmError(message, MODEL_CONTEXT_EXCEEDED), {
+            status: 400,
+          });
         }
       } catch {
         // Keep the SDK error when no structured provider error is available.
@@ -1139,6 +1122,14 @@ function returnedSdkError(response: { _data?: unknown }): boolean {
     typeof response._data === 'object' &&
     'error' in response._data &&
     !!response._data.error
+  );
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  return (
+    ('name' in error && error.name === 'AbortError') ||
+    ('code' in error && error.code === 'ERR_CANCELED')
   );
 }
 

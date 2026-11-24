@@ -23,7 +23,7 @@ import type {
   StepResult,
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
-import { copyErrorUsage, terminalRunError } from '@mcp-abap-adt/llm-agent';
+import { terminalRunError } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
@@ -138,12 +138,9 @@ export class CoordinatorHandler implements IStageHandler {
         return false;
       }
       if (!result.ok) {
-        ctx.error = copyErrorUsage(
-          new OrchestratorError(
-            `coordinator: answer-directly dispatch failed: ${result.error ?? 'unknown'}`,
-            'COORDINATOR_STEP_FAILED',
-          ),
-          result,
+        ctx.error = new OrchestratorError(
+          `coordinator: answer-directly dispatch failed: ${result.error ?? 'unknown'}`,
+          'COORDINATOR_STEP_FAILED',
         );
         return false;
       }
@@ -209,12 +206,9 @@ export class CoordinatorHandler implements IStageHandler {
 
       // Epicfail short-circuits the entire plan, regardless of failPolicy.
       if (result.epicFailTrace) {
-        ctx.error = copyErrorUsage(
-          new OrchestratorError(
-            `coordinator: step ${step.id} returned epicfail: ${result.error ?? 'unknown'}`,
-            'COORDINATOR_EPICFAIL',
-          ),
-          result,
+        ctx.error = new OrchestratorError(
+          `coordinator: step ${step.id} returned epicfail: ${result.error ?? 'unknown'}`,
+          'COORDINATOR_EPICFAIL',
         );
         return false;
       }
@@ -234,12 +228,9 @@ export class CoordinatorHandler implements IStageHandler {
             stepCount: plan.steps.length,
           });
         } else if (this.deps.failPolicy === 'abort') {
-          ctx.error = copyErrorUsage(
-            new OrchestratorError(
-              `coordinator: step ${step.id} failed and failPolicy=abort: ${result.error}`,
-              'COORDINATOR_STEP_FAILED',
-            ),
-            result,
+          ctx.error = new OrchestratorError(
+            `coordinator: step ${step.id} failed and failPolicy=abort: ${result.error}`,
+            'COORDINATOR_STEP_FAILED',
           );
           return false;
         }
@@ -311,7 +302,7 @@ export class CoordinatorHandler implements IStageHandler {
     try {
       return await this.deps.dispatch.dispatch(step, ctx);
     } catch (error) {
-      const terminalError = terminalRunError(error, ctx.signal);
+      const terminalError = terminalRunError(error);
       if (!terminalError) throw error;
       return {
         stepId: step.id,
@@ -365,14 +356,10 @@ function collectActiveSkillMeta(
 function wrapError<T>(err: T, code: string): OrchestratorError {
   const terminal = terminalRunError(err);
   if (terminal) return terminal;
-  return copyErrorUsage(
-    err instanceof OrchestratorError
-      ? err
-      : new OrchestratorError(
-          err instanceof Error ? err.message : String(err),
-          code,
-        ),
-    err,
+  if (err instanceof OrchestratorError) return err;
+  return new OrchestratorError(
+    err instanceof Error ? err.message : String(err),
+    code,
   );
 }
 

@@ -1,6 +1,5 @@
 import {
   type CallOptions,
-  copyErrorUsage,
   type ILlm,
   type ILlmCallStrategy,
   LlmError,
@@ -59,7 +58,7 @@ export class FallbackLlmCallStrategy implements ILlmCallStrategy {
         initialOptions,
       )) {
         if (!chunk.ok) {
-          const terminal = terminalRunError(chunk.error, options?.signal);
+          const terminal = terminalRunError(chunk.error);
           if (terminal) {
             yield { ok: false, error: terminal };
             return;
@@ -76,7 +75,7 @@ export class FallbackLlmCallStrategy implements ILlmCallStrategy {
         yield chunk;
       }
     } catch (err) {
-      const terminal = terminalRunError(err, options?.signal);
+      const terminal = terminalRunError(err);
       if (terminal) {
         yield { ok: false, error: terminal };
         return;
@@ -85,10 +84,7 @@ export class FallbackLlmCallStrategy implements ILlmCallStrategy {
       const errMsg = err instanceof Error ? err.message : String(err);
       if (isCallerCancellation(options?.signal)) {
         // The caller left — not a streaming failure.
-        yield {
-          ok: false,
-          error: copyErrorUsage(new LlmError(errMsg, 'ABORTED'), err),
-        };
+        yield { ok: false, error: new LlmError(errMsg, 'ABORTED') };
         return;
       }
       this.logFallback(errMsg, err);

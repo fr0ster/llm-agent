@@ -177,7 +177,6 @@ for (const batch of [false, true]) {
     };
     const provider: IEmbedderBatch = { embed, embedBatch: embed };
     const embedder = composeResilientEmbedder(provider, {
-      retry: { maxAttempts: 1 },
       throttle: policy('abort-backoff').throttle,
     });
     assert.ok(isBatchEmbedder(embedder));
@@ -238,7 +237,7 @@ test('many 429s keep input cap, usage operation and attempts, with no breaker fa
           return { vector: [1] };
         },
       },
-      { ...policy('unlimited'), maxInputChars: 24_000 },
+      policy('unlimited'),
     ),
     breaker,
   );

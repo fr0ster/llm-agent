@@ -92,7 +92,7 @@ retroactive. Full detail, including what to do if you redistribute:
 [docs/LICENSING.md](https://github.com/fr0ster/llm-agent/blob/main/docs/LICENSING.md).
 
 
-Embedder resolution accepts `maxInputChars` on every factory configuration, including injected instances. The cap is disabled by default. When explicitly set, it applies to direct single-input `embed` calls. Library query embeddings, stored records, and batch calls retain their inputs. Input-too-long failures do not retry.
+Embedder resolution accepts `maxInputChars` on every factory configuration, including injected instances. The default is `24000`; `0` disables the cap. Single-input `embed` calls truncate to the beginning of the input before provider invocation; stored record inputs and batch calls retain their inputs. Input-too-long failures do not retry.
 
 All vector `makeRag` configurations accept `fragmentSizeChars` (default
 2048 Unicode code points). It sets the fragment size when the document embedder

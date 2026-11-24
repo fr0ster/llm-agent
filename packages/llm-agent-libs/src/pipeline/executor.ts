@@ -27,15 +27,13 @@
  */
 
 import {
+  contextExceededError,
   McpError,
-  OrchestratorError,
   type SmartAgentError,
   terminalRunError,
-  toRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { normalizeMaxIterations } from '../config/normalize-max-iterations.js';
 import type { ISpan, ITracer } from '../tracer/types.js';
-import { runInterruption } from '../utils/with-abort.js';
 import { evaluateCondition } from './condition-evaluator.js';
 import type { PipelineContext } from './context.js';
 import type { StageHandlerRegistry } from './handlers/index.js';
@@ -53,7 +51,7 @@ export class PipelineExecutor {
    * @param stages    - Stage definitions to execute in order.
    * @param ctx       - Mutable pipeline context.
    * @param parentSpan - Parent tracing span.
-   * @returns `true` on success, `false` with `ctx.error` on failure.
+   * @returns `true` if all stages completed successfully, `false` if aborted.
    */
   async executeStages(
     stages: StageDefinition[],
@@ -62,11 +60,7 @@ export class PipelineExecutor {
   ): Promise<boolean> {
     for (const stage of stages) {
       if (ctx.error) return false;
-      const signal = ctx.options?.signal;
-      if (signal?.aborted) {
-        ctx.error = runInterruption(signal);
-        return false;
-      }
+      if (ctx.options?.signal?.aborted) return false;
 
       // Evaluate `when` condition
       const shouldRun = evaluateCondition(stage.when, ctx);
@@ -102,17 +96,12 @@ export class PipelineExecutor {
       } catch (err) {
         span.setStatus('error', String(err));
         span.end();
-        const priorityError = runInterruption(signal, [err, ctx.error]);
-        const reported =
-          priorityError ??
-          terminalRunError(err) ??
-          (err instanceof McpError ? err : undefined);
-        ctx.error =
-          priorityError ??
-          ctx.error ??
-          reported ??
-          toRunError(err, 'PIPELINE_STAGE_FAILED');
-        if (reported) ctx.yield({ ok: false, error: reported });
+        const failure =
+          terminalRunError(err) ?? (err instanceof McpError ? err : undefined);
+        if (failure) {
+          ctx.error = failure;
+          ctx.yield({ ok: false, error: failure });
+        }
         ctx.options?.sessionLogger?.logStep(`stage_error_${stage.id}`, {
           error: String(err),
         });
@@ -123,19 +112,10 @@ export class PipelineExecutor {
         phase: stage.id,
         duration: Date.now() - stageStart,
       });
-      if (!ok || ctx.error) {
-        ctx.error =
-          runInterruption(signal, [ctx.error]) ??
-          ctx.error ??
-          new OrchestratorError(
-            `Pipeline stage "${stage.id}" failed.`,
-            'PIPELINE_STAGE_FAILED',
-          );
-      }
-      span.setStatus(ctx.error ? 'error' : 'ok');
+      span.setStatus(ok ? 'ok' : 'error');
       span.end();
 
-      if (ctx.error) return false;
+      if (!ok) return false;
     }
     return true;
   }
@@ -151,7 +131,6 @@ export class PipelineExecutor {
     if (!stage.stages?.length) return true;
 
     const children = stage.stages;
-    const signal = ctx.options?.signal;
     const results = await new Promise<boolean[]>((resolve, reject) => {
       let overflow: SmartAgentError | undefined;
       // Let the enclosing stage report the overflow once, even for a nested parallel stage.
@@ -162,11 +141,10 @@ export class PipelineExecutor {
         }
       };
       const yieldChunk: PipelineContext['yield'] = (chunk) => {
-        if (!chunk.ok) {
-          const failure = runInterruption(signal, [chunk.error]);
-          if (failure?.code === 'ABORTED' && signal?.aborted) return;
-          if (failure && failure.code !== 'ABORTED') stop(failure);
-        }
+        const failure = chunk.ok
+          ? undefined
+          : contextExceededError(chunk.error);
+        if (failure) stop(failure);
         if (!overflow) ctx.yield(chunk);
       };
       const parallelCtx = new Proxy(ctx, {
@@ -177,10 +155,9 @@ export class PipelineExecutor {
         },
         set(target, key, value, receiver) {
           if (key === 'error') {
-            const failure = runInterruption(signal, [value]);
-            if (failure && failure.code !== 'ABORTED') stop(failure);
+            const failure = contextExceededError(value);
+            if (failure) stop(failure);
             if (overflow) return Reflect.set(target, key, overflow, receiver);
-            if (target.error) return true;
           }
           return Reflect.set(target, key, value, receiver);
         },

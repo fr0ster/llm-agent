@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it, test } from 'node:test';
-import { staticApiKey } from '@mcp-abap-adt/llm-agent';
+import {
+  EMBEDDING_CONTEXT_EXCEEDED,
+  staticApiKey,
+  terminalRunError,
+} from '@mcp-abap-adt/llm-agent';
 import { OpenAiEmbedder } from './openai-embedder.js';
 
 describe('OpenAiEmbedder — constructor', () => {
@@ -41,46 +45,58 @@ describe('OpenAiEmbedder — constructor', () => {
   });
 });
 
-for (const [status, message] of [
-  [400, 'context length must be a positive integer'],
-  [400, 'This model does not support the context window parameter'],
-  [400, 'maximum context length must be a positive integer'],
-  [400, 'This model does not support the maximum context length parameter'],
-  [401, 'Invalid API key'],
-  [429, 'Rate limited'],
-  [500, 'Upstream rejected request'],
+for (const [status, message, code, providerCode] of [
+  [400, 'maximum context length must be a positive integer', 'EMBED_ERROR'],
+  [
+    400,
+    'This model has a maximum context length of 8192 tokens',
+    'EMBED_ERROR',
+  ],
+  [401, 'Invalid API key', 'EMBED_ERROR'],
+  [429, 'Rate limited', 'EMBED_ERROR'],
+  [500, 'Service failure', 'EMBED_ERROR'],
+  [
+    400,
+    'The maximum context length is 8192 tokens. However, you requested 8193 tokens.',
+    EMBEDDING_CONTEXT_EXCEEDED,
+  ],
+  [
+    400,
+    'Invalid request',
+    EMBEDDING_CONTEXT_EXCEEDED,
+    'context_length_exceeded',
+  ],
 ] as const) {
-  test(`OpenAI preserves EMBED_ERROR for HTTP ${status}: ${message}`, async (t) => {
-    t.mock.method(globalThis, 'fetch', async () =>
-      Response.json({ error: { message } }, { status }),
+  test(`OpenAI preserves HTTP ${status} details for ${message}`, async (t) => {
+    const body = JSON.stringify({ error: { message, code: providerCode } });
+    t.mock.method(
+      globalThis,
+      'fetch',
+      async () => new Response(body, { status }),
     );
     const embedder = new OpenAiEmbedder({
       credential: staticApiKey('test'),
       model: 'text-embedding-3-small',
     });
-    await assert.rejects(embedder.embed('hello'), {
-      code: 'EMBED_ERROR',
-      status,
-    });
-    await assert.rejects(embedder.embedBatch(['hello', 'world']), {
-      code: 'EMBED_ERROR',
-      status,
-    });
+    for (const [action, run] of [
+      ['embed', () => embedder.embed('hello')],
+      ['batch embed', () => embedder.embedBatch(['hello', 'world'])],
+    ] as const) {
+      await assert.rejects(run, (error) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.cause, undefined);
+        assert.partialDeepStrictEqual(
+          { ...error, message: error.message },
+          {
+            code,
+            status,
+            message: `OpenAI ${action} error: HTTP ${status} - ${body}`,
+          },
+        );
+        if (code === EMBEDDING_CONTEXT_EXCEEDED)
+          assert.equal(terminalRunError(error), error);
+        return true;
+      });
+    }
   });
 }
-
-test('OpenAI reports the requested token count exceeding the context length', async (t) => {
-  const message =
-    "This model's maximum context length is 8192 tokens. However, you requested 8193 tokens (8193 in your prompt; 0 for the completion). Please reduce your prompt; or completion length.";
-  t.mock.method(globalThis, 'fetch', async () =>
-    Response.json({ error: { message } }, { status: 400 }),
-  );
-  const embedder = new OpenAiEmbedder({
-    credential: staticApiKey('test'),
-    model: 'text-embedding-3-small',
-  });
-  await assert.rejects(embedder.embed('hello'), {
-    code: 'EMBEDDING_CONTEXT_EXCEEDED',
-    status: 400,
-  });
-});

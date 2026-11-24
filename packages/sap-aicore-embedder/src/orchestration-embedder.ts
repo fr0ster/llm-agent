@@ -3,13 +3,14 @@ import type { IEmbedderBatch, IEmbedResult } from '@mcp-abap-adt/llm-agent';
 import {
   beginEmbeddingRequest,
   type CallOptions,
-  embeddingOverflowError,
-  findAbort,
+  EMBEDDING_CONTEXT_EXCEEDED,
+  httpStatusOf,
   type IUsageRecorder,
   RagError,
   startOperation,
 } from '@mcp-abap-adt/llm-agent';
 import { decodeEmbedding } from './decode-embedding.js';
+import { isEmbeddingOverflow } from './foundation-embedder.js';
 
 export interface OrchestrationScenarioEmbedderConfig {
   usage?: IUsageRecorder;
@@ -61,6 +62,51 @@ async function buildDestination(cfg: {
     authentication: 'NoAuthentication',
     headers: { Authorization: `Bearer ${await cfg.credential.token()}` },
   };
+}
+
+function orchestrationOverflow<T>(error: T): RagError | undefined {
+  const seen = new Set<object>();
+  let current: object | undefined =
+    typeof error === 'object' && error !== null ? error : undefined;
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    const status = httpStatusOf(current);
+    const response = 'response' in current ? current.response : undefined;
+    const data =
+      response && typeof response === 'object' && 'data' in response
+        ? response.data
+        : undefined;
+    const detail =
+      data && typeof data === 'object' && 'error' in data ? data.error : data;
+    if (
+      [
+        'message' in current ? current.message : undefined,
+        'code' in current ? current.code : undefined,
+        detail,
+        detail && typeof detail === 'object' && 'message' in detail
+          ? detail.message
+          : undefined,
+        detail && typeof detail === 'object' && 'code' in detail
+          ? detail.code
+          : undefined,
+      ].some((value) => isEmbeddingOverflow(status, value))
+    ) {
+      return Object.assign(
+        new RagError(
+          error instanceof Error
+            ? error.message
+            : 'Embedding input exceeds the context length',
+          EMBEDDING_CONTEXT_EXCEEDED,
+        ),
+        { cause: error },
+        status === undefined ? {} : { status },
+      );
+    }
+    const cause = 'cause' in current ? current.cause : undefined;
+    if (typeof cause !== 'object' || cause === null) break;
+    current = cause;
+  }
+  return undefined;
 }
 
 export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
@@ -124,13 +170,18 @@ export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
       });
       return result;
     } catch (error) {
-      const aborted = options?.signal?.aborted || findAbort(error);
+      const failure = options?.signal?.aborted
+        ? error
+        : (orchestrationOverflow(error) ?? error);
       request.end({
-        outcome: aborted ? 'aborted' : 'error',
-        error,
+        outcome:
+          options?.signal?.aborted ||
+          (error instanceof Error && error.name === 'AbortError')
+            ? 'aborted'
+            : 'error',
+        error: failure,
       });
-      if (aborted) throw error;
-      throw embeddingOverflowError(error) ?? error;
+      throw failure;
     }
   }
 
@@ -181,13 +232,18 @@ export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
       });
       return result;
     } catch (error) {
-      const aborted = options?.signal?.aborted || findAbort(error);
+      const failure = options?.signal?.aborted
+        ? error
+        : (orchestrationOverflow(error) ?? error);
       request.end({
-        outcome: aborted ? 'aborted' : 'error',
-        error,
+        outcome:
+          options?.signal?.aborted ||
+          (error instanceof Error && error.name === 'AbortError')
+            ? 'aborted'
+            : 'error',
+        error: failure,
       });
-      if (aborted) throw error;
-      throw embeddingOverflowError(error) ?? error;
+      throw failure;
     }
   }
 

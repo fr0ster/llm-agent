@@ -3,16 +3,16 @@ import {
   MODEL_CONTEXT_EXCEEDED,
   SmartAgentError,
 } from '../interfaces/types.js';
-import { findAbort, toAbortError } from './abort-run-error.js';
 import {
   errorCauseChain,
   httpStatusOf,
   isAuthenticationFailure,
-} from './error-details.js';
-import { copyErrorUsage } from './error-usage.js';
+} from '../llm/throttle.js';
 
 const terminalCodes = new Set([
+  'ABORTED',
   'DECISION_ABORTED',
+  EMBEDDING_CONTEXT_EXCEEDED,
   'LLM_OUTPUT_TRUNCATED',
   'LLM_HTTP_ERROR',
   // The worker and check protocols require an answer or a verdict.
@@ -27,14 +27,18 @@ const terminalCodes = new Set([
 ]);
 
 /** Return the typed failure that must bypass retries, recovery, and fallback. */
-export function terminalRunError<T>(
-  error: T,
-  signal?: AbortSignal,
-): SmartAgentError | undefined {
-  const component = componentRunError(error, signal);
-  if (component) return component;
+export function terminalRunError<T>(error: T): SmartAgentError | undefined {
+  const overflow = contextExceededError(error);
+  if (overflow) return overflow;
   const details =
     typeof error === 'object' && error !== null ? error : undefined;
+  for (const current of errorCauseChain(details)) {
+    const code = 'code' in current ? current.code : undefined;
+    if (typeof code === 'string' && terminalCodes.has(code))
+      return typedFailure(current, code);
+    if ('name' in current && current.name === 'AbortError')
+      return typedFailure(current, 'ABORTED');
+  }
   if (details && isAuthenticationFailure(details))
     return typedFailure(details, 'CREDENTIALS_REJECTED');
   const status = httpStatusOf(details);
@@ -47,102 +51,41 @@ export function terminalRunError<T>(
     status !== 425 &&
     status !== 429
   ) {
-    return typedFailure(details, errorCode(details) ?? 'LLM_HTTP_ERROR');
+    if (details instanceof SmartAgentError) return details;
+    return Object.assign(typedFailure(details, 'LLM_HTTP_ERROR'), {
+      status,
+    });
   }
   return undefined;
 }
 
-/** Find explicitly typed terminal failures without assigning codes from HTTP status. */
-export function componentRunError<T>(
-  error: T,
-  signal?: AbortSignal,
-): SmartAgentError | undefined {
-  const abort = toAbortError(error, signal);
-  if (abort) return abort;
-  const overflow = findOverflow(error);
-  if (overflow) return overflow;
-  const details =
-    typeof error === 'object' && error !== null ? error : undefined;
-  for (const current of errorCauseChain(details)) {
-    const code = errorCode(current);
-    if (code && terminalCodes.has(code))
-      return typedFailure(current, code, details);
-  }
-  return undefined;
-}
-
-function errorCode(error: object | undefined): string | undefined {
-  return error && 'code' in error && typeof error.code === 'string'
-    ? error.code
-    : undefined;
-}
-
-/** Preserve component metadata while giving untyped failures a stable code. */
-export function toRunError<T>(
-  error: T,
-  fallbackCode: string,
-  signal?: AbortSignal,
-): SmartAgentError {
-  const terminal = terminalRunError(error, signal);
-  if (terminal) return terminal;
-  if (typeof error === 'object' && error !== null) {
-    for (const current of errorCauseChain(error)) {
-      const code = errorCode(current);
-      if (code) return typedFailure(error, code);
-    }
-    return typedFailure(error, fallbackCode);
-  }
-  return new SmartAgentError(String(error), fallbackCode, { cause: error });
-}
-
-function typedFailure(
-  error: object,
-  code: string,
-  source = error,
-): SmartAgentError {
-  if (error instanceof SmartAgentError)
-    return copyErrorUsage(error, source, error);
+function typedFailure(error: object, code: string): SmartAgentError {
+  if (error instanceof SmartAgentError) return error;
   const message =
     'message' in error && typeof error.message === 'string'
       ? error.message
       : code;
-  return copyErrorUsage(
-    new SmartAgentError(message, code, {
-      cause: source,
-      status: httpStatusOf(source),
-    }),
-    source,
-    error,
-  );
+  return new SmartAgentError(message, code);
 }
 
 /** The terminal error only when it is a model context overflow. */
 export function contextExceededError<T>(error: T): SmartAgentError | undefined {
-  return findAbort(error) ? undefined : findOverflow(error, true);
-}
-
-/** Find either terminal overflow, preserving the failure and its telemetry. */
-export function overflowError<T>(
-  error: T,
-  signal?: AbortSignal,
-): SmartAgentError | undefined {
-  return findAbort(error, signal) ? undefined : findOverflow(error);
-}
-
-function findOverflow<T>(
-  error: T,
-  modelOnly = false,
-): SmartAgentError | undefined {
   if (typeof error !== 'object' || error === null) return undefined;
-  let embedding: object | undefined;
-  for (const current of errorCauseChain(error)) {
-    const code = errorCode(current);
-    if (code === MODEL_CONTEXT_EXCEEDED)
-      return typedFailure(current, code, error);
-    if (code === EMBEDDING_CONTEXT_EXCEEDED && !modelOnly)
-      embedding ??= current;
+  const seen = new Set<object>();
+  let current: object = error;
+  while (!seen.has(current)) {
+    if ('code' in current && current.code === MODEL_CONTEXT_EXCEEDED) {
+      if (current instanceof SmartAgentError) return current;
+      return Object.defineProperty(
+        typedFailure(current, MODEL_CONTEXT_EXCEEDED),
+        'cause',
+        { value: error, configurable: true, writable: true },
+      );
+    }
+    seen.add(current);
+    const cause = 'cause' in current ? current.cause : undefined;
+    if (typeof cause !== 'object' || cause === null) break;
+    current = cause;
   }
-  return (
-    embedding && typedFailure(embedding, EMBEDDING_CONTEXT_EXCEEDED, error)
-  );
+  return undefined;
 }

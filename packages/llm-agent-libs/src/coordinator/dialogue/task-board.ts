@@ -20,11 +20,10 @@ import type {
   WorkerProfileSummary,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  contextExceededError,
   createDialogueTaskContext,
-  EMBEDDING_CONTEXT_EXCEEDED,
   MODEL_CONTEXT_EXCEEDED,
   normalizeToolTrace,
-  overflowError,
   SmartAgentError,
   ToolTraceCollector,
   type ToolTraceEntry,
@@ -510,7 +509,7 @@ export class TaskBoard {
         kind = 'failed';
       } else kind = result.stopped === true ? 'stopped' : 'done';
     } catch (error) {
-      const overflow = overflowError(error);
+      const overflow = contextExceededError(error);
       if (!overflow && hard.signal.aborted) {
         kind = 'stopped';
         task.error = `stopped: in-flight work aborted after ${this.hardStopAfterMs} ms`;
@@ -596,7 +595,9 @@ export class TaskBoard {
               ),
             ),
           ]);
-          const overflow = stored.ok ? undefined : overflowError(stored.error);
+          const overflow = stored.ok
+            ? undefined
+            : contextExceededError(stored.error);
           if (overflow) {
             kind = 'failed';
             task.terminalErrorCode = overflow.code;
@@ -613,7 +614,7 @@ export class TaskBoard {
             task.error = `result storage failed: ${stored.error.message}`;
           }
         } catch (error) {
-          const overflow = overflowError(error);
+          const overflow = contextExceededError(error);
           if (overflow) {
             kind = 'failed';
             task.terminalErrorCode = overflow.code;
@@ -737,13 +738,12 @@ export class TaskBoard {
   ): SmartAgentError | undefined {
     for (const task of this.records.values()) {
       if (
-        (task.terminalErrorCode === MODEL_CONTEXT_EXCEEDED ||
-          task.terminalErrorCode === EMBEDDING_CONTEXT_EXCEEDED) &&
+        task.terminalErrorCode === MODEL_CONTEXT_EXCEEDED &&
         ownsTask(task.id)
       )
         return new TerminalDialogueError(
-          task.error ?? task.terminalErrorCode,
-          task.terminalErrorCode,
+          task.error ?? MODEL_CONTEXT_EXCEEDED,
+          MODEL_CONTEXT_EXCEEDED,
         );
     }
     for (const task of this.records.values()) {

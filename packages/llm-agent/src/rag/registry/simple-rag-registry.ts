@@ -1,7 +1,4 @@
 import { createHash } from 'node:crypto';
-import { toAbortError } from '../../errors/abort-run-error.js';
-import { copyErrorUsage } from '../../errors/error-usage.js';
-import { overflowError } from '../../errors/terminal-run-error.js';
 import type {
   IRag,
   IRagEditor,
@@ -521,17 +518,12 @@ export class SimpleRagRegistry implements IRagRegistry {
       return {
         ok: false,
         error:
-          toAbortError(err) ??
-          overflowError(err) ??
-          copyErrorUsage(
-            err instanceof RagError
-              ? err
-              : new RagError(
-                  `Deleting the data of collection '${name}' failed: ${err instanceof Error ? err.message : String(err)}`,
-                  'RAG_DELETE_ERROR',
-                ),
-            err,
-          ),
+          err instanceof RagError
+            ? err
+            : new RagError(
+                `Deleting the data of collection '${name}' failed: ${err instanceof Error ? err.message : String(err)}`,
+                'RAG_DELETE_ERROR',
+              ),
       };
     }
     return {

@@ -1,8 +1,7 @@
 import { Buffer } from 'node:buffer';
 import {
   type CallOptions,
-  embeddingOverflowError,
-  findAbort,
+  EMBEDDING_CONTEXT_EXCEEDED,
   type IEmbedderBatch,
   type IEmbedResult,
   RagError,
@@ -12,6 +11,7 @@ import {
 import {
   VoyageClient,
   type VoyageClientConfig,
+  VoyageHttpError,
   type VoyageInputType,
 } from './voyage-client.js';
 
@@ -153,8 +153,29 @@ export class VoyageEmbedder implements IEmbedderBatch {
         };
       });
     } catch (error) {
-      if (options?.signal?.aborted || findAbort(error)) throw error;
-      throw embeddingOverflowError(error) ?? error;
+      // Voyage reports aggregate token violations as HTTP 400. Split only
+      // that batch; an individual input that exceeds its context is an error.
+      if (
+        texts.length < 2 ||
+        !(error instanceof VoyageHttpError) ||
+        error.code === EMBEDDING_CONTEXT_EXCEEDED ||
+        error.status !== 400 ||
+        !/\btotal\b[^.\n]{0,100}\btokens?\b|\btokens?\b[^.\n]{0,100}\btotal\b/i.test(
+          error.message,
+        )
+      ) {
+        throw error;
+      }
+      const midpoint = Math.ceil(texts.length / 2);
+      const left = await this.requestBatch(texts.slice(0, midpoint), {
+        ...options,
+        usageOp: withChunk(operation, 0, 2),
+      });
+      const right = await this.requestBatch(texts.slice(midpoint), {
+        ...options,
+        usageOp: withChunk(operation, 1, 2),
+      });
+      return [...left, ...right];
     }
   }
 }

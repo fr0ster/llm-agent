@@ -1,15 +1,11 @@
 import { Buffer } from 'node:buffer';
 import {
-  abortRunError,
   type CallOptions,
-  copyErrorUsage,
   type IReranker,
-  overflowError,
   RagError,
   type RagResult,
   type Result,
   startOperation,
-  toAbortError,
 } from '@mcp-abap-adt/llm-agent';
 import {
   VoyageClient,
@@ -85,22 +81,18 @@ export class VoyageReranker implements IReranker {
         value: topK === undefined ? ranked : ranked.slice(0, topK),
       };
     } catch (error) {
-      const interruption =
-        toAbortError(error, options?.signal) ??
-        overflowError(error) ??
-        (options?.signal?.aborted
-          ? abortRunError(options.signal.reason, error)
-          : undefined);
+      if (error instanceof RagError && !options?.signal?.aborted) {
+        return { ok: false, error };
+      }
+      const aborted =
+        options?.signal?.aborted ||
+        (error instanceof Error && error.name === 'AbortError');
       return {
         ok: false,
-        error:
-          interruption ??
-          copyErrorUsage(
-            error instanceof RagError
-              ? error
-              : new RagError(String(error), 'RERANK_ERROR', { cause: error }),
-            error,
-          ),
+        error: new RagError(
+          String(error),
+          aborted ? 'ABORTED' : 'RERANK_ERROR',
+        ),
       };
     }
   }
@@ -168,9 +160,6 @@ export class VoyageReranker implements IReranker {
         return { ...results[start + item.index], score: item.relevance_score };
       });
     } catch (error) {
-      const interruption =
-        toAbortError(error, options?.signal) ?? overflowError(error);
-      if (interruption) throw interruption;
       if (!(error instanceof VoyageHttpError)) throw error;
       if (length === 1) {
         error.message = `Voyage AI rerank request for ${candidateLabel(results[start], start)} failed. ${error.message}`;

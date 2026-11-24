@@ -10,19 +10,23 @@ import type {
   LlmUsageAttribution,
   RunRecord,
 } from '@mcp-abap-adt/llm-agent';
-import { toRunError } from '@mcp-abap-adt/llm-agent';
+import {
+  contextExceededError,
+  terminalRunError,
+} from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import {
+  AdaptiveEpicFailError,
   DEFAULT_BUDGET,
   runAdaptivePlan,
 } from '../../coordinator/adaptive/adaptive-interpreter.js';
-import { errorUsage, withUsageCalls } from '../../logger/llm-call-usage.js';
+import { fallbackPlan } from '../../coordinator/adaptive/parse-plan.js';
+import { withUsageCalls } from '../../logger/llm-call-usage.js';
 import {
   callerIdentityKey,
   resolveCallerIdentity,
 } from '../../policy/caller-identity.js';
 import type { ISpan } from '../../tracer/types.js';
-import { runInterruption } from '../../utils/with-abort.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 import { terminalUsage } from './dag-coordinator.js';
@@ -36,18 +40,20 @@ export interface AdaptiveCoordinatorDeps {
   finalizer?: IFinalizer;
   runRecords?: IRunRecordStore;
   budget?: Partial<AdaptiveBudget>;
-  /** @deprecated Planner failures always propagate. */
   fallbackWorker?: string;
   /** Optional allowlist for legacy workers that return usage without call ids. */
   logWorkerUsage?: ReadonlySet<string>;
 }
+const message = (error: unknown) =>
+  error instanceof Error ? error.message : String(error);
+
 /** Plan and execute one adaptive run through the stepper coordinator slot. */
 export class AdaptiveCoordinatorHandler implements IStageHandler {
   constructor(private readonly deps: AdaptiveCoordinatorDeps) {}
 
   async execute(
     ctx: PipelineContext,
-    _config: Parameters<IStageHandler['execute']>[1],
+    _config: Record<string, unknown>,
     _span: ISpan,
   ): Promise<boolean> {
     const identity =
@@ -66,11 +72,8 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
     const tail = history.at(-1);
     if (tail?.role === 'user' && tail.content === request) history.pop();
     const { controller, workers, runRecords, finalizer } = this.deps;
-    const signal = ctx.options?.signal;
-    const runError = <T>(error: T, fallbackCode: string) =>
-      runInterruption(signal, [error]) ?? toRunError(error, fallbackCode);
     const traceId = ctx.options?.trace?.traceId;
-    const log = (key: string, data: object) =>
+    const log = (key: string, data: Record<string, unknown>) =>
       ctx.options?.sessionLogger?.logStep(key, data);
     const runRole = async <T extends LlmUsageAttribution>(
       component: LlmComponent,
@@ -82,7 +85,7 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
         logRoleUsage(ctx, component, value, role.model);
         return value;
       } catch (error) {
-        const failed = errorUsage(error);
+        const failed = error as LlmUsageAttribution | null;
         throw withUsageCalls(
           error,
           logRoleUsage(ctx, component, failed, role.model),
@@ -95,7 +98,7 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
         try {
           previousRun = await runRecords.load(recordKey);
         } catch (error) {
-          throw runError(error, 'COORDINATOR_RECORD_LOAD_FAILED');
+          log('adaptive_record_load_failed', { message: message(error) });
         }
       }
       let plan: AdaptivePlan;
@@ -115,7 +118,13 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
         );
         plan = planned.plan;
       } catch (error) {
-        throw runError(error, 'COORDINATOR_PLAN_FAILED');
+        const overflow = contextExceededError(error);
+        if (overflow) throw overflow;
+        ctx.options?.signal?.throwIfAborted();
+        const terminal = terminalRunError(error);
+        if (terminal) throw terminal;
+        log('adaptive_plan_fallback', { message: message(error) });
+        plan = fallbackPlan(request, this.deps.fallbackWorker ?? 'executor');
       }
       if (plan.spec) plan.spec.raw = request;
       log('adaptive_plan', {
@@ -123,6 +132,7 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
       });
       const forward =
         !finalizer || finalizer.streamsInterpreterContent === true;
+      let fatal: AdaptiveEpicFailError | undefined;
       const result = await runAdaptivePlan({
         request,
         history,
@@ -158,6 +168,10 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
               },
             });
         },
+      }).catch((error: unknown) => {
+        if (!(error instanceof AdaptiveEpicFailError)) throw error;
+        fatal = error;
+        return error.result;
       });
       log('adaptive_run', {
         outcome: result.outcome,
@@ -176,15 +190,13 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
             finishedAt: Date.now(),
           });
         } catch (error) {
-          const failure = runError(error, 'COORDINATOR_RECORD_SAVE_FAILED');
-          if (!result.error) throw failure;
-          log('adaptive_record_save_failed', { message: failure.message });
+          log('adaptive_record_save_failed', { message: message(error) });
         }
       }
+      if (fatal) throw fatal;
       if (result.error) {
         ctx.error = result.error;
-        if (result.error.code !== 'ABORTED' || !signal?.aborted)
-          ctx.yield({ ok: false, error: result.error });
+        ctx.yield({ ok: false, error: result.error });
         return false;
       }
       if (result.outcome !== 'awaiting-external')
@@ -264,7 +276,16 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
       });
       return true;
     } catch (error) {
-      ctx.error = runError(error, 'COORDINATOR_STEP_FAILED');
+      ctx.error =
+        terminalRunError(error) ??
+        (error instanceof OrchestratorError
+          ? error
+          : new OrchestratorError(
+              message(error),
+              ctx.options?.signal?.aborted
+                ? 'ABORTED'
+                : 'COORDINATOR_STEP_FAILED',
+            ));
       return false;
     }
   }

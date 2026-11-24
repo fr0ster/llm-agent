@@ -1,15 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  EMBEDDING_CONTEXT_EXCEEDED,
   MODEL_CONTEXT_EXCEEDED,
   RagError,
   SkillsIncompatibleError,
   symmetricEmbedder,
-  TextOnlyEmbedding,
 } from '@mcp-abap-adt/llm-agent';
 import { makeCompatibleSkillsRag } from './compatible-skills-rag.js';
-import { skillsRagSource } from './skills-rag-source.js';
 
 const MANIFEST = {
   embeddingSpaceId: 'sp',
@@ -208,7 +205,7 @@ test('lazy dimension probe: no embed at construction; first activeManifest probe
   assert.equal(embeds, 1); // one probe
 });
 
-test('skills recall handles a cancellation wrapping overflow', async () => {
+test('skills recall preserves overflow wrapped by a cancellation-shaped error', async () => {
   const overflow = new RagError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
   const rag = makeCompatibleSkillsRag({
     backend: {
@@ -228,57 +225,5 @@ test('skills recall handles a cancellation wrapping overflow', async () => {
     }),
     ...MANIFEST,
   });
-  await assert.rejects(() => rag.query('q', { k: 1 }), { code: 'ABORTED' });
+  await assert.rejects(rag.query('q', { k: 1 }), (error) => error === overflow);
 });
-
-for (const probe of [false, true]) {
-  test(
-    'normalizes only embedding interruptions at the skills ' +
-      (probe ? 'dimension probe' : 'recall') +
-      ' boundary',
-    async () => {
-      const usage = { promptTokens: 1, completionTokens: 0, totalTokens: 1 };
-      const overflow = Object.assign(new Error('input too long'), {
-        status: 400,
-        usage,
-      });
-      const abort = Object.assign(new Error('Cancelled', { cause: overflow }), {
-        name: 'AbortError',
-      });
-      const ordinary = Object.assign(new Error('Embedding request rejected'), {
-        status: 400,
-        usage,
-      });
-      for (const [failure, code] of [
-        [ordinary, 'RAG_ERROR'],
-        [overflow, EMBEDDING_CONTEXT_EXCEEDED],
-        [abort, 'ABORTED'],
-      ] as const) {
-        const handle = makeCompatibleSkillsRag({
-          backend: {
-            async activeSnapshot() {
-              return { revision: 'g0', manifest: MANIFEST };
-            },
-            async queryRevision() {
-              assert.fail('Embedding failed before lookup');
-            },
-          },
-          embedder: {
-            async embedQuery() {
-              throw failure;
-            },
-          },
-          ...MANIFEST,
-          dimension: probe ? undefined : MANIFEST.dimension,
-        });
-        const rag = skillsRagSource(handle, { group: 'skills', k: 1 });
-        const result = probe
-          ? await rag.healthCheck?.()
-          : await rag.query(new TextOnlyEmbedding('q'), 1);
-        assert.ok(result && !result.ok);
-        assert.equal(result.error.code, code);
-        assert.deepEqual(result.error.usage, usage);
-      }
-    },
-  );
-}

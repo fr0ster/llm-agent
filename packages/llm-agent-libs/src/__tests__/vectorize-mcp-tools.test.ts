@@ -449,8 +449,8 @@ describe('vectorizeMcpTools summary', () => {
 
 describe('vectorizeMcpTools bulk upsert', () => {
   for (const reject of [false, true]) {
-    it(`falls back from ${reject ? 'rejected' : 'returned'} ordinary failures and records failed single writes`, async () => {
-      const failed = new RagError('Write failed', 'UPSERT_ERROR');
+    it(`falls back from ${reject ? 'rejected' : 'returned'} ABORTED and records failed single writes`, async () => {
+      const aborted = new RagError('Write aborted', 'ABORTED');
       let bulkCalls = 0;
       const writes: string[] = [];
       const rag = new InMemoryRag();
@@ -458,14 +458,14 @@ describe('vectorizeMcpTools bulk upsert', () => {
         ...rag.writer(),
         async upsertManyPrecomputedRaw() {
           bulkCalls++;
-          if (reject) throw failed;
-          return { ok: false, error: failed };
+          if (reject) throw aborted;
+          return { ok: false, error: aborted };
         },
         async upsertPrecomputedRaw(id) {
           writes.push(id);
           if (id === 'tool:bad') {
-            if (reject) throw failed;
-            return { ok: false, error: failed };
+            if (reject) throw aborted;
+            return { ok: false, error: aborted };
           }
           return { ok: true, value: undefined };
         },
@@ -493,36 +493,6 @@ describe('vectorizeMcpTools bulk upsert', () => {
       assert.equal(summary?.vectorized, 1);
     });
   }
-  for (const reject of [false, true]) {
-    it(`propagates a ${reject ? 'thrown' : 'returned'} bulk abort before individual writes`, async () => {
-      const error = new RagError('Write aborted', 'ABORTED');
-      const rag = new InMemoryRag();
-      const writer: IRagBackendWriter = {
-        ...rag.writer(),
-        async upsertManyPrecomputedRaw() {
-          if (reject) throw error;
-          return { ok: false, error };
-        },
-        async upsertPrecomputedRaw() {
-          assert.fail('unexpected fallback write after bulk abort');
-        },
-      };
-      await assert.rejects(
-        () =>
-          vectorizeMcpTools(
-            [makeClient([makeTool('A')])],
-            Object.assign(rag, {
-              embedder: symmetricEmbedder(makeBatchEmbedder()),
-              writer: () => writer,
-            }),
-            new NoopRequestLogger(),
-            undefined,
-          ),
-        { code: 'ABORTED' },
-      );
-    });
-  }
-
   it('uses one bulk call instead of one write per tool', async () => {
     const writer = makeWriter({ hasBatchRaw: true, hasBulk: true });
     const rag = makeRagWithEmbedder(makeBatchEmbedder(), writer);

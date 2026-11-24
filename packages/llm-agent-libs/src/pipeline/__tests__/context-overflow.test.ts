@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { setImmediate } from 'node:timers/promises';
 import {
-  EMBEDDING_CONTEXT_EXCEEDED,
   type ISkill,
   type ISkillManager,
   McpError,
@@ -18,7 +17,6 @@ import {
 import { DefaultPipeline } from '../default-pipeline.js';
 import { PipelineExecutor } from '../executor.js';
 import type { StageHandlerRegistry } from '../handlers/index.js';
-import { pipelineToStream } from '../pipeline-to-stream.js';
 
 const overflow = new RagError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
 const doc = { text: 'a skill', metadata: { id: 'skill:example' }, score: 1 };
@@ -98,49 +96,6 @@ for (const phase of ['skill fallback', 'tool fallback', 'parallel retrieval']) {
       assert.equal(llm.callCount, 0);
     });
   }
-}
-
-for (const sibling of ['fails', 'stays pending'] as const) {
-  test(`skills surface a later embedding overflow when the first store ${sibling}`, async () => {
-    const error = new RagError(
-      'Embedding input is too long',
-      EMBEDDING_CONTEXT_EXCEEDED,
-    );
-    const first = makeRag([]);
-    const second = makeRag([]);
-    let firstCalls = 0;
-    let secondCalls = 0;
-    const ready = Promise.withResolvers<void>();
-    first.query = async () => {
-      if (++firstCalls === 1) return { ok: true, value: [] };
-      if (sibling === 'fails') throw new Error('Store unavailable');
-      return new Promise<never>(() => {});
-    };
-    second.query = async () => {
-      if (++secondCalls === 1) return { ok: true, value: [] };
-      await ready.promise;
-      return { ok: false, error };
-    };
-    const { deps, llm } = makeDefaultDeps({ ragStores: { first, second } });
-    const pipeline = new DefaultPipeline();
-    pipeline.initialize({ ...deps, skillManager });
-    let observed: Error | undefined;
-    const execution = pipeline
-      .execute('work', [], testCallOptions(), () => {})
-      .then((result) => {
-        observed = result.error;
-        return result;
-      });
-    await setImmediate();
-    assert.equal(observed, undefined);
-    assert.equal(firstCalls, 2);
-    assert.equal(secondCalls, 2);
-    ready.resolve();
-    await setImmediate();
-    assert.equal(observed, error);
-    await execution;
-    assert.equal(llm.callCount, 0);
-  });
 }
 
 test('parallel stages forward an ordinary error before a later content chunk', async () => {
@@ -311,124 +266,3 @@ test('pipeline tool selection surfaces a listing overflow beside a healthy clien
   assert.equal(result.error, overflow);
   assert.equal(llm.callCount, 0);
 });
-
-for (const throws of [false, true]) {
-  test(`pipeline surfaces one typed stage failure (throws=${throws})`, async () => {
-    const cause = new Error('Stage offline');
-    const pipeline = new DefaultPipeline({
-      stepperCoordinator: {
-        async execute() {
-          if (throws) throw cause;
-          return false;
-        },
-      },
-    });
-    const { deps, llm } = makeDefaultDeps();
-    pipeline.initialize(deps);
-    const chunks = await Array.fromAsync(
-      pipelineToStream(pipeline, 'work', [], testCallOptions()),
-    );
-    const failures = chunks.filter((chunk) => !chunk.ok);
-    assert.equal(failures.length, 1);
-    assert.equal(failures[0]?.error.code, 'PIPELINE_STAGE_FAILED');
-    if (throws) assert.equal(failures[0]?.error.cause, cause);
-    else assert.match(failures[0]?.error.message ?? '', /coordinator/);
-    assert.equal(llm.callCount, 0);
-  });
-}
-
-test('pipeline reports ABORTED when the pre-aborted signal has a coded reason', async () => {
-  const pipeline = new DefaultPipeline();
-  const { deps, llm } = makeDefaultDeps();
-  pipeline.initialize(deps);
-  const signal = AbortSignal.abort(
-    new RagError('Cancelled', MODEL_CONTEXT_EXCEEDED),
-  );
-  const chunks = await Array.fromAsync(
-    pipelineToStream(pipeline, 'work', [], testCallOptions({ signal })),
-  );
-  const failures = chunks.filter((chunk) => !chunk.ok);
-  assert.equal(failures.length, 1);
-  assert.equal(failures[0]?.error.code, 'ABORTED');
-  assert.equal(failures[0]?.error.message, 'Cancelled');
-  assert.equal(llm.callCount, 0);
-});
-
-for (const outcome of [
-  'throw',
-  'throw the abort reason',
-  'return false',
-  'return false with an error',
-]) {
-  test(`pipeline reports ABORTED when an aborted stage will ${outcome}`, async () => {
-    const abort = new AbortController();
-    const pipeline = new DefaultPipeline({
-      stepperCoordinator: {
-        async execute(ctx) {
-          abort.abort(
-            new RagError(
-              'Cancelled',
-              outcome === 'throw the abort reason'
-                ? MODEL_CONTEXT_EXCEEDED
-                : 'CONFIG_ERROR',
-            ),
-          );
-          if (outcome === 'throw') throw new Error('Stage offline');
-          if (outcome === 'throw the abort reason')
-            abort.signal.throwIfAborted();
-          if (outcome === 'return false with an error')
-            ctx.error = new RagError('Stage offline', 'LLM_HTTP_ERROR');
-          return false;
-        },
-      },
-    });
-    const { deps, llm } = makeDefaultDeps();
-    pipeline.initialize(deps);
-    const chunks = await Array.fromAsync(
-      pipelineToStream(
-        pipeline,
-        'work',
-        [],
-        testCallOptions({ signal: abort.signal }),
-      ),
-    );
-    const failures = chunks.filter((chunk) => !chunk.ok);
-    assert.equal(failures.length, 1);
-    assert.equal(failures[0]?.error.code, 'ABORTED');
-    assert.equal(llm.callCount, 0);
-  });
-}
-
-for (const code of [MODEL_CONTEXT_EXCEEDED, EMBEDDING_CONTEXT_EXCEEDED]) {
-  for (const throws of [false, true]) {
-    test(`pipeline prioritizes ${code} over abort (throws=${throws})`, async () => {
-      const abort = new AbortController();
-      const failure = new RagError('Input exceeds context', code);
-      const pipeline = new DefaultPipeline({
-        stepperCoordinator: {
-          async execute(ctx) {
-            abort.abort(new RagError('Cancelled', 'CONFIG_ERROR'));
-            if (throws) throw new Error('Stage failed', { cause: failure });
-            ctx.error = new RagError('Stage failed', 'QUERY_ERROR', {
-              cause: failure,
-            });
-            return false;
-          },
-        },
-      });
-      pipeline.initialize(makeDefaultDeps().deps);
-      const chunks = await Array.fromAsync(
-        pipelineToStream(
-          pipeline,
-          'work',
-          [],
-          testCallOptions({ signal: abort.signal }),
-        ),
-      );
-      assert.deepEqual(
-        chunks.filter((chunk) => !chunk.ok),
-        [{ ok: false, error: failure }],
-      );
-    });
-  }
-}

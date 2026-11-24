@@ -254,7 +254,7 @@ for (const layout of ['shared', 'per-collection'] as const) {
       assert.equal(hana.statements.length, before);
     });
 
-    it('query and upsert propagate ABORTED from the embedder', async () => {
+    it('an ABORTED thrown inside an existing operation keeps its 30.2.0 code', async () => {
       const hana = storingHana({ dimension: DIM });
       if (layout === 'per-collection') hana.createCollectionTable('kb');
       // A signal-bound embedder (RetryEmbedder) throws exactly this.
@@ -276,10 +276,10 @@ for (const layout of ['shared', 'per-collection'] as const) {
       ) as Store;
       const u = await store.upsert('text', { id: 'a' });
       assert.ok(!u.ok);
-      assert.equal(u.error.code, 'ABORTED');
+      assert.equal(u.error.code, 'UPSERT_ERROR');
       const q = await store.query(new QueryEmbedding('text', aborting), 3);
       assert.ok(!q.ok);
-      assert.equal(q.error.code, 'ABORTED');
+      assert.equal(q.error.code, 'QUERY_ERROR');
     });
 
     it('scan and deleteWhere pass an ABORTED from the driver through', async () => {

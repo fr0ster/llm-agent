@@ -8,7 +8,7 @@ import type {
   Result,
   UsageInput,
 } from '@mcp-abap-adt/llm-agent';
-import { findAbort, McpError } from '@mcp-abap-adt/llm-agent';
+import { McpError } from '@mcp-abap-adt/llm-agent';
 import type { AuxToolEntry } from './wait-tool.js';
 
 /**
@@ -67,7 +67,10 @@ export class DefaultAuxiliaryMcpTools implements IAuxiliaryMcpTools {
       return response;
     } catch (error) {
       outcome =
-        options?.signal?.aborted || findAbort(error) ? 'aborted' : 'error';
+        options?.signal?.aborted ||
+        (error instanceof Error && error.name === 'AbortError')
+          ? 'aborted'
+          : 'error';
       try {
         if (typeof error === 'object' && error !== null) {
           for (const key of ['code', 'status'] as const) {
