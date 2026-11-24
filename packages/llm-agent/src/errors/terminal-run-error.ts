@@ -8,6 +8,8 @@ import {
   httpStatusOf,
   isAuthenticationFailure,
 } from '../llm/throttle.js';
+import { isTypedAbort } from './abort-run-error.js';
+import { errorUsage, withUsageAttribution } from './error-usage.js';
 
 const terminalCodes = new Set([
   'ABORTED',
@@ -37,7 +39,7 @@ export function terminalRunError<T>(error: T): SmartAgentError | undefined {
     if (typeof code === 'string' && terminalCodes.has(code))
       return typedFailure(current, code, details);
     if ('name' in current && current.name === 'AbortError')
-      return typedFailure(current, 'ABORTED');
+      return typedFailure(current, 'ABORTED', details);
   }
   if (details && isAuthenticationFailure(details))
     return typedFailure(details, 'CREDENTIALS_REJECTED');
@@ -82,15 +84,22 @@ function typedFailure(
   code: string,
   source = error,
 ): SmartAgentError {
-  if (error instanceof SmartAgentError) return error;
+  if (error instanceof SmartAgentError)
+    return source === error
+      ? error
+      : withUsageAttribution(error, errorUsage(source));
   const message =
     'message' in error && typeof error.message === 'string'
       ? error.message
       : code;
-  return new SmartAgentError(message, code, {
-    cause: source,
-    status: httpStatusOf(source),
-  });
+  return Object.assign(
+    new SmartAgentError(message, code, {
+      cause: source,
+      status: httpStatusOf(source),
+    }),
+    errorUsage(error),
+    errorUsage(source),
+  );
 }
 
 /** The terminal error only when it is a model context overflow. */
@@ -110,6 +119,7 @@ function findRunError<T>(error: T, code: string): SmartAgentError | undefined {
   const seen = new Set<object>();
   let current: object = error;
   while (!seen.has(current)) {
+    if (isTypedAbort(current)) return undefined;
     if (errorCode(current) === code) return typedFailure(current, code, error);
     seen.add(current);
     const cause = 'cause' in current ? current.cause : undefined;

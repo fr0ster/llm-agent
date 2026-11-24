@@ -1,5 +1,15 @@
-import { EMBEDDING_CONTEXT_EXCEEDED, RagError } from '../interfaces/types.js';
+import {
+  EMBEDDING_CONTEXT_EXCEEDED,
+  RagError,
+  type SmartAgentError,
+} from '../interfaces/types.js';
 import { errorCauseChain, httpStatusOf } from '../llm/throttle.js';
+import {
+  abortRunError,
+  isAbortReason,
+  isTypedAbort,
+} from './abort-run-error.js';
+import { errorUsage } from './error-usage.js';
 import {
   contextExceededError,
   embeddingContextExceededError,
@@ -41,6 +51,7 @@ export function embeddingOverflowError<T>(error: T): RagError | undefined {
     typeof error === 'object' && error !== null ? error : undefined;
   const status = httpStatusOf(source);
   for (const current of errorCauseChain(source)) {
+    if (isTypedAbort(current)) return undefined;
     const response = 'response' in current ? current.response : undefined;
     const data =
       response && typeof response === 'object' && 'data' in response
@@ -80,7 +91,12 @@ export function embeddingOverflowError<T>(error: T): RagError | undefined {
 }
 
 /** Convert an SDK or custom embedder failure to a typed embedding error. */
-export function toEmbeddingError<T>(error: T): RagError {
+export function toEmbeddingError<T>(error: T, signal?: AbortSignal): RagError {
+  if (isAbortReason(error, signal)) {
+    const aborted = abortRunError(signal?.reason, error);
+    return asRagError(aborted, error);
+  }
+  if (isTypedAbort(error)) return asRagError(error, error);
   const modelOverflow = contextExceededError(error);
   if (modelOverflow) return toRagError(modelOverflow, 'EMBED_ERROR');
   return embeddingOverflowError(error) ?? toRagError(error, 'EMBED_ERROR');
@@ -88,10 +104,16 @@ export function toEmbeddingError<T>(error: T): RagError {
 
 /** Keep provider codes and metadata across RAG Result boundaries. */
 export function toRagError<T>(error: T, fallbackCode: string): RagError {
-  const failure = toRunError(error, fallbackCode);
+  return asRagError(toRunError(error, fallbackCode), error);
+}
+
+function asRagError<T>(failure: SmartAgentError, error: T): RagError {
   if (failure instanceof RagError) return failure;
-  return new RagError(failure.message, failure.code, {
-    cause: error,
-    status: httpStatusOf(failure),
-  });
+  return Object.assign(
+    new RagError(failure.message, failure.code, {
+      cause: error,
+      status: httpStatusOf(failure),
+    }),
+    errorUsage(failure),
+  );
 }

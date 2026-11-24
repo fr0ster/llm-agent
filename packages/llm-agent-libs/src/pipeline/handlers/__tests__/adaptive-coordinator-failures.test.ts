@@ -8,6 +8,7 @@ import {
   type ISubAgent,
   LlmError,
   MODEL_CONTEXT_EXCEEDED,
+  QueryEmbedding,
   RagError,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgentBuilder } from '../../../builder.js';
@@ -40,6 +41,8 @@ function buildAdaptiveAgent(
   plan: IAdaptiveController['plan'],
   run?: ISubAgent['run'],
   logger = new DefaultRequestLogger(),
+  report: IAdaptiveController['report'] = async () =>
+    assert.fail('unexpected report'),
 ) {
   const worker: ISubAgent | undefined = run && {
     name: 'executor',
@@ -61,7 +64,7 @@ function buildAdaptiveAgent(
           plan,
           check: async () => assert.fail('unexpected check'),
           revise: async () => assert.fail('unexpected revision'),
-          report: async () => assert.fail('unexpected report'),
+          report,
         },
         workers: new Map(worker ? [[worker.name, worker]] : []),
       }),
@@ -234,7 +237,13 @@ test('adaptive planning exposes embedding overflow when a custom planner also ab
   }
 });
 
-for (const path of ['planner', 'worker', 'epicfail', 'executor'] as const) {
+for (const path of [
+  'planner',
+  'query embedding',
+  'worker',
+  'epicfail',
+  'executor',
+] as const) {
   for (const withUsage of [false, true]) {
     test(`agent reports the ${path} abort with a nested overflow (usage=${withUsage})`, async (t) => {
       const abort = new AbortController();
@@ -280,10 +289,25 @@ for (const path of ['planner', 'worker', 'epicfail', 'executor'] as const) {
               .build()
               .then(unwrapBuilderResult)
           : await buildAdaptiveAgent(
-              async ({ signal }) =>
-                path === 'planner'
-                  ? cancel(signal)
-                  : { plan: { steps: [adaptiveSteps.worker], createdAt: 0 } },
+              async ({ signal }) => {
+                if (path === 'planner') return cancel(signal);
+                if (path === 'query embedding') {
+                  const query = new QueryEmbedding(
+                    'planner context',
+                    {
+                      async embedQuery(_text, options) {
+                        return cancel(options?.signal);
+                      },
+                    },
+                    { ...testCallOptions(), signal },
+                  );
+                  await query.toVector();
+                  assert.fail('expected query embedding cancellation');
+                }
+                return {
+                  plan: { steps: [adaptiveSteps.worker], createdAt: 0 },
+                };
+              },
               async ({ signal }) => {
                 if (path === 'worker') return cancel(signal);
                 abort.abort(reason);
@@ -300,10 +324,7 @@ for (const path of ['planner', 'worker', 'epicfail', 'executor'] as const) {
       assert.ok(!result.ok);
       assert.equal(result.error.code, 'ABORTED');
       assert.equal(result.error.message, reason.message);
-      assert.deepEqual(
-        'usage' in result.error ? result.error.usage : undefined,
-        withUsage ? usage : undefined,
-      );
+      assert.deepEqual(result.error.usage, withUsage ? usage : undefined);
       assert.deepEqual(
         result.error.usageCalls?.map(({ totalTokens }) => totalTokens) ?? [],
         withUsage ? [3] : [],
@@ -315,6 +336,41 @@ for (const path of ['planner', 'worker', 'epicfail', 'executor'] as const) {
       }
     });
   }
+}
+
+for (const role of ['planner', 'report'] as const) {
+  test(`adaptive ${role} preserves failure usage on the agent error`, async (t) => {
+    const logger = new DefaultRequestLogger();
+    const failure = Object.assign(new Error('Component failed'), { usage });
+    const handle = await buildAdaptiveAgent(
+      async () => {
+        if (role === 'planner') throw failure;
+        return { plan: { steps: [adaptiveSteps.worker], createdAt: 0 } };
+      },
+      async () => ({ output: 'work done' }),
+      logger,
+      async () => {
+        throw failure;
+      },
+    );
+    t.after(() => handle.close());
+
+    const result = await handle.agent.process('Work', testCallOptions());
+    assert.ok(!result.ok);
+    assert.equal(
+      result.error.code,
+      role === 'planner'
+        ? 'COORDINATOR_PLAN_FAILED'
+        : 'COORDINATOR_REPORT_FAILED',
+    );
+    assert.deepEqual(result.error.usage, usage);
+    assert.deepEqual(
+      result.error.usageCalls?.map(({ totalTokens }) => totalTokens),
+      [3],
+    );
+    assert.equal(logger.getSummary().totals.requests, 1);
+    assert.equal(logger.getSummary().totals.totalTokens, 3);
+  });
 }
 
 for (const mode of [

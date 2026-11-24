@@ -35,7 +35,7 @@ export class QueryEmbedding implements IQueryEmbedding {
         usage: this.options?.usage?.with({ role: 'embedding' }),
       });
     } catch (error) {
-      throw toEmbeddingError(error);
+      throw toEmbeddingError(error, this.options?.signal);
     }
   }
 
@@ -74,7 +74,7 @@ export class FallbackQueryEmbedding implements IQueryEmbedding {
   constructor(
     private readonly inner: IQueryEmbedding,
     _fallback: IQueryEmbedder,
-    _options?: CallOptions,
+    private readonly options?: CallOptions,
   ) {}
 
   get text(): string {
@@ -90,7 +90,7 @@ export class FallbackQueryEmbedding implements IQueryEmbedding {
     try {
       return await this.inner.toVector();
     } catch (error) {
-      throw toEmbeddingError(error);
+      throw toEmbeddingError(error, this.options?.signal);
     }
   }
 }

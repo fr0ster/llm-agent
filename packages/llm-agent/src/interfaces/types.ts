@@ -170,6 +170,7 @@ export interface LlmStreamChunk {
 // ---------------------------------------------------------------------------
 
 export class SmartAgentError extends Error {
+  declare usage?: LlmUsage;
   declare usageCalls?: readonly LlmCallRecord[];
   declare readonly status?: number;
 

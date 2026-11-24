@@ -1,7 +1,9 @@
+export { abortRunError, isAbortReason } from './abort-run-error.js';
 export {
   collectWithContextOverflow,
   contextOverflowInSettled,
 } from './collect-with-context-overflow.js';
+export { errorUsage, withUsageAttribution } from './error-usage.js';
 export { MissingProviderError } from './missing-provider-error.js';
 export {
   embeddingErrorCode,
