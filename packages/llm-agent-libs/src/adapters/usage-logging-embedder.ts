@@ -11,6 +11,7 @@ import {
   isBatchEmbedder,
   isBatchSizeLimited,
   startOperation,
+  withEmbeddingError,
 } from '@mcp-abap-adt/llm-agent';
 
 const BRAND = Symbol.for('@mcp-abap-adt/usage-logging-embedder');
@@ -55,11 +56,16 @@ class UsageLoggingEmbedder implements IEmbedder {
   }
 
   async embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
-    const r = await this.inner.embed(text, {
-      ...options,
-      usageOp: { ...startOperation(options) },
-      usage: options?.usage?.with({ role: 'embedding' }),
-    });
+    const r = await withEmbeddingError(
+      () =>
+        this.inner.embed(text, {
+          ...options,
+          usageOp: { ...startOperation(options) },
+          usage: options?.usage?.with({ role: 'embedding' }),
+        }),
+      options?.signal,
+      'preserve-rejection',
+    );
     logEmbed(options, text, r.usage);
     return r;
   }
@@ -76,11 +82,16 @@ class UsageLoggingBatchEmbedder
     texts: string[],
     options?: CallOptions,
   ): Promise<IEmbedResult[]> {
-    const results = await this.inner.embedBatch(texts, {
-      ...options,
-      usageOp: { ...startOperation(options) },
-      usage: options?.usage?.with({ role: 'embedding' }),
-    });
+    const results = await withEmbeddingError(
+      () =>
+        this.inner.embedBatch(texts, {
+          ...options,
+          usageOp: { ...startOperation(options) },
+          usage: options?.usage?.with({ role: 'embedding' }),
+        }),
+      options?.signal,
+      'preserve-rejection',
+    );
     const logger = options?.requestLogger;
     if (logger) {
       let prompt = 0;

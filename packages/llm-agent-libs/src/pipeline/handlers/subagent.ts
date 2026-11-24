@@ -15,7 +15,12 @@ import type {
   ISubAgentResult,
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
-import { terminalRunError } from '@mcp-abap-adt/llm-agent';
+import {
+  copyErrorUsage,
+  overflowError,
+  terminalRunError,
+  toAbortError,
+} from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import type { ISpan } from '../../tracer/types.js';
 import { resolveTemplate, setPath } from '../../util/template.js';
@@ -82,11 +87,21 @@ export class SubAgentHandler implements IStageHandler {
       });
     } catch (err) {
       ctx.error =
-        terminalRunError(err) ??
-        new OrchestratorError(
-          err instanceof Error ? err.message : String(err),
-          'SUBAGENT_RUNTIME_ERROR',
+        terminalRunError(err, signal) ??
+        copyErrorUsage(
+          new OrchestratorError(
+            err instanceof Error ? err.message : String(err),
+            'SUBAGENT_RUNTIME_ERROR',
+          ),
+          err,
         );
+      return false;
+    }
+
+    const terminal =
+      toAbortError(result.error, signal) ?? overflowError(result.error);
+    if (terminal) {
+      ctx.error = copyErrorUsage(terminal, terminal, result);
       return false;
     }
 

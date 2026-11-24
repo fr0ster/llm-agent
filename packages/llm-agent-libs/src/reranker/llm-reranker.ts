@@ -96,18 +96,7 @@ export class LlmReranker implements IReranker {
         slice.map((b) => this._scoreBatch(query, b.items, options)),
         (result) => (result.ok ? undefined : result.error),
       );
-      if (!batch.ok) {
-        return {
-          ok: false,
-          error: copyErrorUsage(
-            new RagError(batch.error.message, 'RERANK_ERROR', {
-              cause: batch.error,
-              status: batch.error.status,
-            }),
-            batch.error,
-          ),
-        };
-      }
+      if (!batch.ok) return batch;
       const outcomes = batch.value;
       for (let k = 0; k < slice.length; k++) {
         const o = outcomes[k];
@@ -167,12 +156,11 @@ export class LlmReranker implements IReranker {
       if (!res.ok) {
         return {
           ok: false,
-          error:
+          error: copyErrorUsage(
             runInterruption(options?.signal, [res.error]) ??
-            copyErrorUsage(
               new RagError(res.error.message, 'RERANK_ERROR'),
-              res.error,
-            ),
+            res.error,
+          ),
         };
       }
       // Meter the call before parsing: an out-of-contract reply is billed too.
@@ -181,19 +169,21 @@ export class LlmReranker implements IReranker {
       if (typeof scores === 'string') {
         return {
           ok: false,
-          error: new RagError(`Reranking failed: ${scores}`, 'RERANK_ERROR'),
+          error: copyErrorUsage(
+            new RagError(`Reranking failed: ${scores}`, 'RERANK_ERROR'),
+            res.value,
+          ),
         };
       }
       return { ok: true, value: scores };
     } catch (err) {
       return {
         ok: false,
-        error:
+        error: copyErrorUsage(
           runInterruption(options?.signal, [err]) ??
-          copyErrorUsage(
             new RagError(`Reranking failed: ${String(err)}`, 'RERANK_ERROR'),
-            err,
-          ),
+          err,
+        ),
       };
     }
   }

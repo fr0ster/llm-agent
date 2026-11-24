@@ -3,10 +3,10 @@ import {
   RagError,
   type SmartAgentError,
 } from '../interfaces/types.js';
-import { findAbort } from './abort-run-error.js';
+import { findAbort, toAbortError } from './abort-run-error.js';
 import { errorCauseChain, httpStatusOf } from './error-details.js';
 import { copyErrorUsage } from './error-usage.js';
-import { overflowError, toRunError } from './terminal-run-error.js';
+import { componentRunError, overflowError } from './terminal-run-error.js';
 
 const inputSizeRejections = [
   /\bcontext_length_exceeded\b/i,
@@ -88,25 +88,54 @@ export function embeddingOverflowError<T>(
   return undefined;
 }
 
-/** Convert an SDK or custom embedder failure to a typed embedding error. */
-export function toEmbeddingError<T>(error: T, signal?: AbortSignal): RagError {
-  return (
-    embeddingOverflowError(error, signal) ??
-    toRagError(error, 'EMBED_ERROR', signal)
-  );
+/** Recognize SDK or custom embedder interruptions. */
+export function toEmbeddingError<T>(
+  error: T,
+  signal?: AbortSignal,
+): RagError | undefined {
+  const abort = toAbortError(error, signal);
+  return abort ? asRagError(abort, error) : embeddingOverflowError(error);
 }
 
-/** Keep provider codes and metadata across RAG Result boundaries. */
+/** Normalize embedding interruptions while preserving ordinary rejections. */
+export async function withEmbeddingError<T>(
+  embed: () => Promise<T>,
+  signal?: AbortSignal,
+  mode?: 'preserve-rejection',
+): Promise<T> {
+  try {
+    return await embed();
+  } catch (error) {
+    // Delegating decorators preserve the original rejection for their callers.
+    if (
+      mode === 'preserve-rejection' &&
+      (findAbort(error, signal) || overflowError(error))
+    )
+      throw error;
+    throw toEmbeddingError(error, signal) ?? error;
+  }
+}
+
+/** Keep interruptions and RAG errors across boundaries with a released fallback code. */
 export function toRagError<T>(
   error: T,
   fallbackCode: string,
   signal?: AbortSignal,
 ): RagError {
-  return asRagError(toRunError(error, fallbackCode, signal), error);
+  const interruption = componentRunError(error, signal);
+  if (interruption) return asRagError(interruption, error);
+  return error instanceof RagError
+    ? copyErrorUsage(error, error)
+    : copyErrorUsage(
+        new RagError(String(error), fallbackCode, { cause: error }),
+        error,
+      );
 }
 
 function asRagError<T>(failure: SmartAgentError, error: T): RagError {
-  if (failure instanceof RagError) return failure;
+  if (error instanceof RagError && error.code === failure.code)
+    return copyErrorUsage(error, failure);
+  if (failure instanceof RagError) return copyErrorUsage(failure, error);
   return copyErrorUsage(
     new RagError(failure.message, failure.code, {
       cause: error,

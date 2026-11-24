@@ -6,7 +6,11 @@ import type {
   ISubAgentInput,
   PlanStep,
 } from '@mcp-abap-adt/llm-agent';
-import { TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
+import {
+  MODEL_CONTEXT_EXCEEDED,
+  SmartAgentError,
+  TextOnlyEmbedding,
+} from '@mcp-abap-adt/llm-agent';
 import { testRagAccess } from '@mcp-abap-adt/llm-agent/testing/rag-access-testing';
 import {
   callerA,
@@ -123,3 +127,30 @@ describe('SubAgentDispatch task composition', () => {
     assert.match(captured.task ?? '', /Overall objective: Ship the release/);
   });
 });
+
+for (const code of ['ABORTED', MODEL_CONTEXT_EXCEEDED]) {
+  it(`nested dispatch preserves a returned ${code} failure and usage`, async () => {
+    const usage = { promptTokens: 4, completionTokens: 0, totalTokens: 4 };
+    const error = new SmartAgentError('Component failure', code);
+    const worker: ISubAgent = {
+      name: 'worker',
+      capabilities: { contextPolicy: 'optional' },
+      async run() {
+        return { output: '', error, usage };
+      },
+    };
+    const result = await new SubAgentDispatch().dispatch(
+      { id: '1', agent: worker.name, goal: 'execute', status: 'pending' },
+      {
+        caller: callerA,
+        inputText: 'execute',
+        registry: new Map([[worker.name, worker]]),
+        stepResults: {},
+        sessionId: callerA.sessionId,
+      },
+    );
+    assert.equal(result.ok, false);
+    assert.equal(result.terminalError?.code, code);
+    assert.deepEqual(result.terminalError?.usage, usage);
+  });
+}

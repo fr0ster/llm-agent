@@ -20,6 +20,7 @@ export type SubagentResult =
   | {
       kind: 'error';
       error: string;
+      abort?: SmartAgentError;
       contextOverflow?: SmartAgentError;
       usage?: LlmUsage;
     };

@@ -324,9 +324,14 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         terminalTtlMs,
       );
     } catch (error) {
-      const terminal = overflowError(error);
+      const terminal =
+        toAbortError(error, ctx.options?.signal) ?? overflowError(error);
       if (!terminal) throw error;
-      if (bundle.runId && bundle.runState !== 'terminal') {
+      if (
+        bundle.runId &&
+        bundle.runState !== 'terminal' &&
+        !(terminal.code === 'ABORTED' && ctx.options?.signal?.aborted)
+      ) {
         await this.commitTerminalError(
           ctx.sessionId,
           bundle,
@@ -1598,7 +1603,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         }
 
         if (res.kind === 'error') {
-          const terminal = res.contextOverflow;
+          const terminal = res.abort ?? res.contextOverflow;
           if (terminal) throw terminal;
           retries++;
           if (retries <= cfg.maxRetries) {
@@ -2317,7 +2322,8 @@ export class ControllerCoordinatorHandler implements IStageHandler {
   ): boolean {
     if (
       outcome.kind === 'error' &&
-      (outcome.code === MODEL_CONTEXT_EXCEEDED ||
+      (outcome.code === 'ABORTED' ||
+        outcome.code === MODEL_CONTEXT_EXCEEDED ||
         outcome.code === EMBEDDING_CONTEXT_EXCEEDED)
     ) {
       return this.surfaceRunError(

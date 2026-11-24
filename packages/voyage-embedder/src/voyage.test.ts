@@ -3,9 +3,12 @@ import { Buffer } from 'node:buffer';
 import { test } from 'node:test';
 import {
   asymmetricEmbedder,
+  EMBEDDING_CONTEXT_EXCEEDED,
   type IUsageRecorder,
+  MODEL_CONTEXT_EXCEEDED,
   RagError,
   type RagResult,
+  SmartAgentError,
   type UsageInput,
 } from '@mcp-abap-adt/llm-agent';
 import { VoyageEmbedder, VoyageReranker } from './index.js';
@@ -706,4 +709,59 @@ test('reranking surfaces the first 429 and skips remaining batches', async (t) =
   assert.equal(result.error.code, 'RERANK_ERROR');
   assert.equal(result.error.status, 429);
   assert.deepEqual(batches, ['0', '1000']);
+});
+
+for (const code of [
+  'RERANK_ERROR',
+  'ABORTED',
+  MODEL_CONTEXT_EXCEEDED,
+  EMBEDDING_CONTEXT_EXCEEDED,
+]) {
+  test(`Voyage rerank preserves ${code} and usage through transport wrappers`, async (t) => {
+    const usage = { promptTokens: 1, completionTokens: 2, totalTokens: 3 };
+    const usageCalls = [
+      {
+        callId: 'provider',
+        component: 'rerank',
+        model: 'rerank-3',
+        durationMs: 1,
+        ...usage,
+      },
+    ];
+    const cause = Object.assign(
+      code === 'RERANK_ERROR'
+        ? new Error('Network unavailable')
+        : new SmartAgentError('Provider failure', code),
+      { usage, usageCalls },
+    );
+    t.mock.method(globalThis, 'fetch', async () => {
+      throw new Error('Transport wrapper', { cause });
+    });
+    const result = await new VoyageReranker(rerankingConfig).rerank('q', [
+      { text: 'candidate', score: 1, metadata: {} },
+    ]);
+    assert.ok(!result.ok);
+    assert.equal(result.error.code, code);
+    assert.deepEqual(result.error.usage, usage);
+    assert.deepEqual(result.error.usageCalls, usageCalls);
+  });
+}
+
+test('Voyage rerank keeps usage when the caller cancels a failing transport request', async (t) => {
+  const controller = new AbortController();
+  const usage = { promptTokens: 4, completionTokens: 0, totalTokens: 4 };
+  const cause = Object.assign(new Error('Service unavailable'), { usage });
+  t.mock.method(globalThis, 'fetch', async () => {
+    controller.abort();
+    throw cause;
+  });
+  const result = await new VoyageReranker(rerankingConfig).rerank(
+    'q',
+    [{ text: 'candidate', score: 1, metadata: {} }],
+    { signal: controller.signal },
+  );
+  assert.ok(!result.ok);
+  assert.equal(result.error.code, 'ABORTED');
+  assert.equal(result.error.cause, cause);
+  assert.deepEqual(result.error.usage, usage);
 });

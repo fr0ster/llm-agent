@@ -158,7 +158,7 @@ it('memoizes a failed query embedding without retrying', async () => {
   ]);
   for (const outcome of outcomes) {
     assert.equal(outcome.status, 'rejected');
-    assert.equal(outcome.reason.cause, failure);
+    assert.equal(outcome.reason, failure);
   }
   assert.equal(calls, 1);
 });

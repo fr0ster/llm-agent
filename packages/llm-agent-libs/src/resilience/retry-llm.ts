@@ -12,6 +12,7 @@ import type { ILlm, Message } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
   CircuitBreakerLlm,
+  copyErrorUsage,
   DefaultWaitStrategy,
   exponentialBackoffMs,
   findThrottled,
@@ -26,6 +27,7 @@ import {
   retryAfterSecondsOf,
   startOperation,
   terminalRunError,
+  toAbortError,
   withOuterAttempt,
 } from '@mcp-abap-adt/llm-agent';
 
@@ -49,13 +51,15 @@ const DEFAULT_OPTIONS: RetryOptions = {
 };
 
 function toLlmError<T>(cause: T): LlmError {
-  return cause instanceof LlmError
-    ? cause
-    : (terminalRunError(cause) ??
-        Object.assign(new LlmError(String(cause), 'LLM_ERROR'), {
-          cause,
-          ...errorUsage(cause),
-        }));
+  return (
+    terminalRunError(cause) ??
+    copyErrorUsage(
+      cause instanceof LlmError
+        ? cause
+        : Object.assign(new LlmError(String(cause), 'LLM_ERROR'), { cause }),
+      cause,
+    )
+  );
 }
 
 function abortError(signal: AbortSignal): LlmError {
@@ -112,11 +116,18 @@ export class RetryLlm implements ILlm {
         result = { ok: false, error: toLlmError(error) };
       }
 
-      const overflow = result.ok
+      const interruption = result.ok
         ? undefined
-        : overflowError(result.error, signal);
-      if (overflow) return { ok: false, error: overflow };
-      if (signal?.aborted) return { ok: false, error: abortError(signal) };
+        : (toAbortError(result.error, signal) ?? overflowError(result.error));
+      if (interruption) return { ok: false, error: interruption };
+      if (signal?.aborted)
+        return {
+          ok: false,
+          error: copyErrorUsage(
+            abortError(signal),
+            result.ok ? result.value : result.error,
+          ),
+        };
       if (result.ok) return result;
       const terminal = terminalRunError(result.error, signal);
       if (terminal) return { ok: false, error: terminal };
@@ -162,10 +173,14 @@ export class RetryLlm implements ILlm {
         ...options,
         usageOp: withOuterAttempt(op, attempt),
       })) {
-        const overflow = chunk.ok
+        const interruption = chunk.ok
           ? undefined
-          : overflowError(chunk.error, signal);
-        if (signal?.aborted && !overflow && !(chunk.ok && chunk.value.reset)) {
+          : (toAbortError(chunk.error, signal) ?? overflowError(chunk.error));
+        if (
+          signal?.aborted &&
+          !interruption &&
+          !(chunk.ok && chunk.value.reset)
+        ) {
           const usage: LlmUsageAttribution = chunk.ok
             ? { usage: chunk.value.usage, usageCalls: chunk.value.usageCalls }
             : errorUsage(chunk.error);
@@ -180,11 +195,12 @@ export class RetryLlm implements ILlm {
           if (!chunk.value.reset) chunksYielded++;
           yield chunk;
         } else {
-          const terminal = overflow ?? terminalRunError(chunk.error, signal);
+          const terminal =
+            interruption ?? terminalRunError(chunk.error, signal);
           if (terminal) {
             yield {
               ok: false,
-              error: Object.assign(terminal, errorUsage(chunk.error)),
+              error: copyErrorUsage(terminal, chunk.error),
             };
             return;
           }

@@ -10,6 +10,7 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  abortRunError,
   assertNonEmptyFilter,
   assertScanOptions,
   copyErrorUsage,
@@ -35,7 +36,7 @@ import {
   ragIdentityFilter,
   recordVectors,
   TextOnlyEmbedding,
-  toRagError,
+  toAbortError,
   validateRagMetadata,
 } from '@mcp-abap-adt/llm-agent';
 import type { HanaVectorRagConfig } from './connection.js';
@@ -134,7 +135,6 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private readonly dimension: number;
   private readonly fragmentSizeChars?: number;
   private readonly embedder: IRetrievalEmbedder;
-  private readonly preserveQueryAbort: boolean;
   private readonly autoCreateSchema: boolean;
   private readonly connectConfig: HanaVectorRagConfig;
   private readonly injectedClient?: HanaClient;
@@ -156,7 +156,6 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     this.dimension = config.dimension ?? 1536;
     this.fragmentSizeChars = config.fragmentSizeChars;
     this.embedder = config.embedder;
-    this.preserveQueryAbort = config.fallbackOnQueryEmbeddingError === false;
     this.listStore = JSON.stringify([
       'hana-vector-rag',
       config.layout ?? 'per-collection',
@@ -259,12 +258,17 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   }
 
   /** The shared check's own error reaches the caller as is; anything else is wrapped in `code`. */
-  private failure(err: unknown, code: string): RagError {
-    return err instanceof RagError &&
-      (err.code === SHARED_LAYOUT_NOT_DEPLOYED ||
-        err.code === 'HEALTH_CHECK_ERROR')
-      ? err
-      : copyErrorUsage(new RagError(String(err), code), err);
+  private failure<T>(err: T, code: string): RagError {
+    const interruption = toAbortError(err) ?? overflowError(err);
+    if (interruption) return interruption;
+    return copyErrorUsage(
+      err instanceof RagError &&
+        (err.code === SHARED_LAYOUT_NOT_DEPLOYED ||
+          err.code === 'HEALTH_CHECK_ERROR')
+        ? err
+        : new RagError(String(err), code, { cause: err }),
+      err,
+    );
   }
 
   /** `failure` for `scan` / `deleteWhere`, which also pass `ABORTED` through. */
@@ -330,21 +334,15 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
         })),
       };
     } catch (err) {
-      const overflow = overflowError(err, options?.signal);
-      if (overflow) return { ok: false, error: overflow };
-      if (options?.signal?.aborted)
-        return {
-          ok: false,
-          error: copyErrorUsage(
-            toRagError(options.signal.reason, 'ABORTED', options.signal),
-            err,
-          ),
-        };
-      if (
-        err instanceof RagError &&
-        (err.code !== 'ABORTED' || this.preserveQueryAbort)
-      )
-        return { ok: false, error: err };
+      const interruption =
+        toAbortError(err, options?.signal) ??
+        overflowError(err) ??
+        (options?.signal?.aborted
+          ? abortRunError(options.signal.reason, err)
+          : undefined);
+      if (interruption) return { ok: false, error: interruption };
+      if (err instanceof RagError)
+        return { ok: false, error: copyErrorUsage(err, err) };
       return { ok: false, error: this.failure(err, 'QUERY_ERROR') };
     }
   }
@@ -552,16 +550,13 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       options?.signal?.throwIfAborted();
       return this.upsertKnown(text, vectors, metadata, options);
     } catch (err) {
-      const overflow = overflowError(err, options?.signal);
-      if (overflow) return { ok: false, error: overflow };
-      if (options?.signal?.aborted)
-        return {
-          ok: false,
-          error: copyErrorUsage(
-            toRagError(options.signal.reason, 'ABORTED', options.signal),
-            err,
-          ),
-        };
+      const interruption =
+        toAbortError(err, options?.signal) ??
+        overflowError(err) ??
+        (options?.signal?.aborted
+          ? abortRunError(options.signal.reason, err)
+          : undefined);
+      if (interruption) return { ok: false, error: interruption };
       return { ok: false, error: this.failure(err, 'UPSERT_ERROR') };
     }
   }

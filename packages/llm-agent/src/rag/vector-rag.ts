@@ -1,6 +1,7 @@
 import { randomUUID as listStoreId, randomUUID } from 'node:crypto';
+import { abortRunError, toAbortError } from '../errors/abort-run-error.js';
 import { copyErrorUsage } from '../errors/error-usage.js';
-import { toRagError } from '../errors/rag-error.js';
+import { toRagError, withEmbeddingError } from '../errors/rag-error.js';
 import { overflowError } from '../errors/terminal-run-error.js';
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type {
@@ -262,16 +263,13 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       options?.signal?.throwIfAborted();
       return this.upsertKnownVectors(enrichedText, vectors, metadata);
     } catch (err) {
-      const terminal = overflowError(err, options?.signal);
-      if (terminal) return { ok: false, error: terminal };
-      if (options?.signal?.aborted)
-        return {
-          ok: false,
-          error: copyErrorUsage(
-            toRagError(options.signal.reason, 'ABORTED', options.signal),
-            err,
-          ),
-        };
+      const interruption =
+        toAbortError(err, options?.signal) ??
+        overflowError(err) ??
+        (options?.signal?.aborted
+          ? abortRunError(options.signal.reason, err)
+          : undefined);
+      if (interruption) return { ok: false, error: interruption };
       return {
         ok: false,
         error: toRagError(err, 'UPSERT_ERROR', options?.signal),
@@ -392,8 +390,6 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
 
       return { ok: true, value: scored };
     } catch (err) {
-      const terminal = overflowError(err, options?.signal);
-      if (terminal) return { ok: false, error: terminal };
       return {
         ok: false,
         error: toRagError(err, 'QUERY_ERROR', options?.signal),
@@ -403,18 +399,28 @@ export class VectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
 
   async healthCheck(options?: CallOptions): Promise<Result<void, RagError>> {
     try {
-      await this.embedder.embedQuery('ping', {
-        ...options,
-        usage: options?.usage?.with({ role: 'embedding' }),
-      });
+      await withEmbeddingError(
+        () =>
+          this.embedder.embedQuery('ping', {
+            ...options,
+            usage: options?.usage?.with({ role: 'embedding' }),
+          }),
+        options?.signal,
+      );
       return { ok: true, value: undefined };
     } catch (err) {
       return {
         ok: false,
-        error: new RagError(
-          `RAG health check failed: ${String(err)}`,
-          'HEALTH_CHECK_ERROR',
-        ),
+        error:
+          toAbortError(err, options?.signal) ??
+          overflowError(err) ??
+          copyErrorUsage(
+            new RagError(
+              `RAG health check failed: ${String(err)}`,
+              'HEALTH_CHECK_ERROR',
+            ),
+            err,
+          ),
       };
     }
   }

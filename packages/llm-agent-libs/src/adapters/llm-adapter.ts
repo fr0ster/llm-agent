@@ -15,13 +15,16 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
+  copyErrorUsage,
   LlmError,
   type LlmResponse,
   type LlmStreamChunk,
   type LlmTool,
   type LlmToolCall,
   type LlmToolCallDelta,
+  overflowError,
   type Result,
+  toAbortError,
 } from '@mcp-abap-adt/llm-agent';
 import { parseToolArguments } from '../pipeline/handlers/tool-response-round.js';
 import { withAbort } from '../utils/with-abort.js';
@@ -388,10 +391,9 @@ export class LlmAdapter implements ILlm, IModelProvider {
 
       return { ok: true, value: models };
     } catch (err) {
-      if (err instanceof LlmError) return { ok: false, error: err };
       return {
         ok: false,
-        error: new LlmError(String(err), 'MODEL_LIST_FAILED'),
+        error: asLlmError(err, options?.signal, 'MODEL_LIST_FAILED'),
       };
     }
   }
@@ -416,10 +418,9 @@ export class LlmAdapter implements ILlm, IModelProvider {
         : await modelsPromise;
       return { ok: true, value: raw.map(normalizeModelEntry) };
     } catch (err) {
-      if (err instanceof LlmError) return { ok: false, error: err };
       return {
         ok: false,
-        error: new LlmError(String(err), 'MODEL_LIST_FAILED'),
+        error: asLlmError(err, options?.signal, 'MODEL_LIST_FAILED'),
       };
     }
   }
@@ -480,8 +481,7 @@ export class LlmAdapter implements ILlm, IModelProvider {
 
       return { ok: true, value: parseProviderResponse(raw, onDiagnostic) };
     } catch (err) {
-      if (err instanceof LlmError) return { ok: false, error: err };
-      return { ok: false, error: asLlmError(err) };
+      return { ok: false, error: asLlmError(err, options?.signal) };
     }
   }
 
@@ -553,8 +553,7 @@ export class LlmAdapter implements ILlm, IModelProvider {
         yield { ok: true, value: parseStreamChunk(chunk, onDiagnostic) };
       }
     } catch (err) {
-      if (err instanceof LlmError) yield { ok: false, error: err };
-      else yield { ok: false, error: asLlmError(err) };
+      yield { ok: false, error: asLlmError(err, options?.signal) };
     }
   }
 
@@ -598,10 +597,9 @@ export class LlmAdapter implements ILlm, IModelProvider {
       }
       return { ok: true, value: true };
     } catch (err) {
-      if (err instanceof LlmError) return { ok: false, error: err };
       return {
         ok: false,
-        error: new LlmError(String(err), 'HEALTH_CHECK_FAILED'),
+        error: asLlmError(err, options?.signal, 'HEALTH_CHECK_FAILED'),
       };
     }
   }
@@ -614,8 +612,15 @@ export class LlmAdapter implements ILlm, IModelProvider {
  * HTTP status and rate-limit metadata. The retry decorator uses them to
  * classify the failure and honor the server's retry delay.
  */
-function asLlmError(err: unknown): LlmError {
-  const wrapped = new LlmError(String(err));
+function asLlmError<T>(
+  err: T,
+  signal?: AbortSignal,
+  code = 'LLM_ERROR',
+): LlmError {
+  const interruption = toAbortError(err, signal) ?? overflowError(err);
+  if (interruption) return interruption;
+  if (err instanceof LlmError) return copyErrorUsage(err, err);
+  const wrapped = new LlmError(String(err), code);
   if (typeof err === 'object' && err !== null) wrapped.cause = err;
-  return wrapped;
+  return copyErrorUsage(wrapped, err);
 }

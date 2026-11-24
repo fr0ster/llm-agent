@@ -21,6 +21,7 @@ import {
   isBatchSizeLimited,
   RagError,
 } from '@mcp-abap-adt/llm-agent';
+import { withEmbeddingError } from '../errors/rag-error.js';
 import { httpStatusOf } from '../llm/throttle.js';
 import { startOperation } from '../usage/hooks.js';
 import { isCallerCancellation } from './caller-cancellation.js';
@@ -46,10 +47,15 @@ export class CircuitBreakerEmbedderBase implements IEmbedder {
       throw new RagError('Embedder circuit breaker is open', 'CIRCUIT_OPEN');
     }
     try {
-      const result = await this.inner.embed(text, {
-        ...options,
-        usageOp: { ...startOperation(options) },
-      });
+      const result = await withEmbeddingError(
+        () =>
+          this.inner.embed(text, {
+            ...options,
+            usageOp: { ...startOperation(options) },
+          }),
+        options?.signal,
+        'preserve-rejection',
+      );
       if (!isCallerCancellation(options?.signal)) {
         this.breaker.recordSuccess();
       }
@@ -85,17 +91,23 @@ export class CircuitBreakerEmbedder
     if (!this.breaker.isCallPermitted) {
       throw new RagError('Embedder circuit breaker is open', 'CIRCUIT_OPEN');
     }
-    if (!isBatchEmbedder(this.inner)) {
+    const inner = this.inner;
+    if (!isBatchEmbedder(inner)) {
       throw new RagError(
         'Inner embedder does not support batch embedding',
         'EMBED_ERROR',
       );
     }
     try {
-      const result = await this.inner.embedBatch(texts, {
-        ...options,
-        usageOp: { ...startOperation(options) },
-      });
+      const result = await withEmbeddingError(
+        () =>
+          inner.embedBatch(texts, {
+            ...options,
+            usageOp: { ...startOperation(options) },
+          }),
+        options?.signal,
+        'preserve-rejection',
+      );
       if (!isCallerCancellation(options?.signal)) {
         this.breaker.recordSuccess();
       }

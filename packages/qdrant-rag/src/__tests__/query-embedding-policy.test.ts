@@ -122,8 +122,28 @@ describe('QdrantRag query embedding fallback policy', () => {
 
     assert.equal(result.ok, false);
     if (result.ok) assert.fail('Expected a failed Result');
-    assert.equal(result.error.code, 'EMBED_ERROR');
+    assert.equal(result.error.code, 'QUERY_ERROR');
     assert.equal(result.error.cause, failure);
     assert.deepEqual(calls, ['query']);
   });
+});
+
+it('keeps UPSERT_ERROR and usage for an ordinary document embedding failure', async (context) => {
+  const usage = { promptTokens: 3, completionTokens: 0, totalTokens: 3 };
+  const failure = Object.assign(new Error('Embedding request rejected'), {
+    status: 400,
+    usage,
+  });
+  const fail = async () => {
+    throw failure;
+  };
+  const rag = makeRag(
+    { embedDocument: fail, embedQuery: fail },
+    false,
+    context,
+  );
+  const result = await rag.upsert('document', { id: 'doc' });
+  assert.ok(!result.ok);
+  assert.equal(result.error.code, 'UPSERT_ERROR');
+  assert.deepEqual(result.error.usage, usage);
 });

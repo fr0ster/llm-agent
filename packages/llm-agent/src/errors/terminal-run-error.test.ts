@@ -7,7 +7,7 @@ import {
   SmartAgentError,
 } from '../interfaces/types.js';
 import { withUsageAttribution } from './error-usage.js';
-import { toEmbeddingError } from './rag-error.js';
+import { toEmbeddingError, withEmbeddingError } from './rag-error.js';
 import {
   contextExceededError,
   overflowError,
@@ -67,6 +67,7 @@ test('normalizes SDK embedding size errors with a status and original cause', ()
     },
   );
   const failure = toEmbeddingError(error);
+  assert.ok(failure);
   assert.equal(failure.code, EMBEDDING_CONTEXT_EXCEEDED);
   assert.equal(failure.status, 400);
   assert.equal(failure.cause, error);
@@ -105,4 +106,26 @@ test('cancellation takes precedence over a nested overflow without a signal', ()
     assert.equal(overflowError(error), undefined);
     assert.equal(toRunError(error, 'FALLBACK').code, 'ABORTED');
   }
+});
+
+test('the embedding boundary preserves ordinary rejections and types signal reasons', async () => {
+  const usage = { promptTokens: 4, completionTokens: 0, totalTokens: 4 };
+  const cause = Object.assign(new Error('Request rejected'), {
+    status: 400,
+    usage,
+  });
+  const request = async () => {
+    throw cause;
+  };
+  await assert.rejects(withEmbeddingError(request), (error) => error === cause);
+  const signal = AbortSignal.abort(cause);
+  await assert.rejects(withEmbeddingError(request, signal), {
+    code: 'ABORTED',
+    cause,
+    usage,
+  });
+  await assert.rejects(
+    withEmbeddingError(request, signal, 'preserve-rejection'),
+    (error) => error === cause,
+  );
 });

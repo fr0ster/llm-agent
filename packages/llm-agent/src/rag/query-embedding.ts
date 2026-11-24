@@ -1,4 +1,4 @@
-import { toEmbeddingError } from '../errors/rag-error.js';
+import { withEmbeddingError } from '../errors/rag-error.js';
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type { IEmbedResult, IQueryEmbedder } from '../interfaces/rag.js';
 import type { CallOptions } from '../interfaces/types.js';
@@ -27,16 +27,16 @@ export class QueryEmbedding implements IQueryEmbedding {
     return this._result;
   }
 
-  private async embed(): Promise<IEmbedResult> {
-    try {
-      return await this.embedder.embedQuery(this.text, {
-        ...this.options,
-        preserveEmbeddingInput: true,
-        usage: this.options?.usage?.with({ role: 'embedding' }),
-      });
-    } catch (error) {
-      throw toEmbeddingError(error, this.options?.signal);
-    }
+  private embed(): Promise<IEmbedResult> {
+    return withEmbeddingError(
+      () =>
+        this.embedder.embedQuery(this.text, {
+          ...this.options,
+          preserveEmbeddingInput: true,
+          usage: this.options?.usage?.with({ role: 'embedding' }),
+        }),
+      this.options?.signal,
+    );
   }
 
   toVector(): Promise<number[]> {
@@ -82,15 +82,10 @@ export class FallbackQueryEmbedding implements IQueryEmbedding {
   }
 
   toVector(): Promise<number[]> {
-    this.vector ??= this.embed();
+    this.vector ??= withEmbeddingError(
+      () => this.inner.toVector(),
+      this.options?.signal,
+    );
     return this.vector;
-  }
-
-  private async embed(): Promise<number[]> {
-    try {
-      return await this.inner.toVector();
-    } catch (error) {
-      throw toEmbeddingError(error, this.options?.signal);
-    }
   }
 }

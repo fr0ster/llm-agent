@@ -1,9 +1,11 @@
 import {
+  abortRunError,
   type CallOptions,
   collectWithContextOverflow,
   copyErrorUsage,
   type DecisionAnswer,
   type DecisionEntry,
+  DecisionError,
   formatTrustTag,
   type IDecisionModel,
   type NoulQuestion,
@@ -167,19 +169,28 @@ export class DecisionReranker implements IReranker {
         criteria,
       };
     }
-    const res = await this.model.decide({ state: query, questions }, options);
+    const interruption = <T>(error: T) =>
+      error instanceof DecisionError && error.code === 'DECISION_ABORTED'
+        ? abortRunError(error)
+        : runInterruption(options?.signal, [error]);
+    let res: Awaited<ReturnType<IDecisionModel['decide']>>;
+    try {
+      res = await this.model.decide({ state: query, questions }, options);
+    } catch (error) {
+      const terminal = interruption(error);
+      throw terminal ? copyErrorUsage(terminal, error) : error;
+    }
     if (!res.ok) {
       return {
         ok: false,
-        error:
-          runInterruption(options?.signal, [res.error]) ??
-          copyErrorUsage(
+        error: copyErrorUsage(
+          interruption(res.error) ??
             new RagError(
               `decision rerank failed: ${res.error.code}: ${res.error.message}`,
               'RERANK_ERROR',
             ),
-            res.error,
-          ),
+          res.error,
+        ),
       };
     }
     return { ok: true, value: res.value.answers };

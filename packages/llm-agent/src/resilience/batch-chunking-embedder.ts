@@ -6,6 +6,7 @@
  * look batch-capable to isBatchEmbedder.
  */
 
+import { withEmbeddingError } from '../errors/rag-error.js';
 import type { IEmbedderBatch, IEmbedResult } from '../interfaces/rag.js';
 // CallOptions lives in types.ts and is NOT re-exported by rag.ts.
 import type { CallOptions } from '../interfaces/types.js';
@@ -37,10 +38,15 @@ export class BatchChunkingEmbedder implements IEmbedderBatch {
   }
 
   embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
-    return this.inner.embed(text, {
-      ...options,
-      usageOp: { ...startOperation(options) },
-    });
+    return withEmbeddingError(
+      () =>
+        this.inner.embed(text, {
+          ...options,
+          usageOp: { ...startOperation(options) },
+        }),
+      options?.signal,
+      'preserve-rejection',
+    );
   }
 
   async embedBatch(
@@ -54,14 +60,19 @@ export class BatchChunkingEmbedder implements IEmbedderBatch {
     // limiting that chunking exists to avoid.
     for (let i = 0; i < texts.length; i += this.maxBatchSize) {
       const chunk = texts.slice(i, i + this.maxBatchSize);
-      const res = await this.inner.embedBatch(chunk, {
-        ...options,
-        usageOp: withChunk(
-          op,
-          i / this.maxBatchSize,
-          Math.ceil(texts.length / this.maxBatchSize),
-        ),
-      });
+      const res = await withEmbeddingError(
+        () =>
+          this.inner.embedBatch(chunk, {
+            ...options,
+            usageOp: withChunk(
+              op,
+              i / this.maxBatchSize,
+              Math.ceil(texts.length / this.maxBatchSize),
+            ),
+          }),
+        options?.signal,
+        'preserve-rejection',
+      );
       if (res.length !== chunk.length) {
         throw new RagError(
           `Batch embedding returned ${res.length} embeddings, expected ${chunk.length}`,

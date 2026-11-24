@@ -31,17 +31,10 @@ export function terminalRunError<T>(
   error: T,
   signal?: AbortSignal,
 ): SmartAgentError | undefined {
-  const abort = toAbortError(error, signal);
-  if (abort) return abort;
-  const overflow = findOverflow(error);
-  if (overflow) return overflow;
+  const component = componentRunError(error, signal);
+  if (component) return component;
   const details =
     typeof error === 'object' && error !== null ? error : undefined;
-  for (const current of errorCauseChain(details)) {
-    const code = 'code' in current ? current.code : undefined;
-    if (typeof code === 'string' && terminalCodes.has(code))
-      return typedFailure(current, code, details);
-  }
   if (details && isAuthenticationFailure(details))
     return typedFailure(details, 'CREDENTIALS_REJECTED');
   const status = httpStatusOf(details);
@@ -55,6 +48,25 @@ export function terminalRunError<T>(
     status !== 429
   ) {
     return typedFailure(details, errorCode(details) ?? 'LLM_HTTP_ERROR');
+  }
+  return undefined;
+}
+
+/** Find explicitly typed terminal failures without assigning codes from HTTP status. */
+export function componentRunError<T>(
+  error: T,
+  signal?: AbortSignal,
+): SmartAgentError | undefined {
+  const abort = toAbortError(error, signal);
+  if (abort) return abort;
+  const overflow = findOverflow(error);
+  if (overflow) return overflow;
+  const details =
+    typeof error === 'object' && error !== null ? error : undefined;
+  for (const current of errorCauseChain(details)) {
+    const code = errorCode(current);
+    if (code && terminalCodes.has(code))
+      return typedFailure(current, code, details);
   }
   return undefined;
 }

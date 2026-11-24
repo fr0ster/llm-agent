@@ -1,25 +1,26 @@
 import type { Result, SmartAgentError } from '../interfaces/types.js';
+import { toAbortError } from './abort-run-error.js';
 import { overflowError } from './terminal-run-error.js';
 
-/** Settle on the first overflow, or preserve the batch's values or first ordinary rejection. */
+/** Settle on the first interruption, or preserve the batch's values or first ordinary rejection. */
 export async function collectWithContextOverflow<T>(
   operations: readonly Promise<T>[],
   failureOf?: (value: T) => Error | undefined,
   options?: { rejectImmediately: boolean },
 ): Promise<Result<T[], SmartAgentError>> {
   return new Promise((resolve, reject) => {
-    const reportOverflow = <E>(error: E) => {
-      const failure = overflowError(error);
+    const reportInterruption = <E>(error: E) => {
+      const failure = toAbortError(error) ?? overflowError(error);
       if (failure) resolve({ ok: false, error: failure });
     };
     const watched = operations.map((operation) =>
       operation.then(
         (value) => {
-          reportOverflow(failureOf?.(value));
+          reportInterruption(failureOf?.(value));
           return value;
         },
         (error) => {
-          reportOverflow(error);
+          reportInterruption(error);
           throw error;
         },
       ),

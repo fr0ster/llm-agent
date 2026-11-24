@@ -1,8 +1,11 @@
 import {
+  copyErrorUsage,
   httpStatusOf,
   isAuthenticationFailure,
   LlmError,
+  overflowError,
   retryAfterSecondsOf,
+  toAbortError,
 } from '@mcp-abap-adt/llm-agent';
 
 export const aborted = () => new LlmError('Aborted', 'ABORTED');
@@ -50,8 +53,23 @@ const sdkClasses = new Set([
 ]);
 
 /** Retain structured transport facts and withhold SDK messages and causes. */
-export function sdkError<T>(error: T): LlmError {
-  if (error instanceof LlmError) return error;
+export function sdkError<T>(error: T, signal?: AbortSignal): LlmError {
+  const interruption = toAbortError(error, signal) ?? overflowError(error);
+  if (interruption) {
+    if (error instanceof LlmError && interruption.code === error.code)
+      return copyErrorUsage(error, interruption);
+    return copyErrorUsage(
+      new LlmError(
+        interruption.code === 'ABORTED'
+          ? 'Aborted'
+          : 'Copilot SDK context exceeded',
+        interruption.code,
+      ),
+      interruption,
+    );
+  }
+  if (signal?.aborted) return copyErrorUsage(aborted(), error, signal.reason);
+  if (error instanceof LlmError) return copyErrorUsage(error, error);
   const details = typeof error === 'object' && error !== null ? error : {};
   const data =
     'data' in details &&
@@ -98,8 +116,11 @@ export function sdkError<T>(error: T): LlmError {
     typeof code === 'number' || (typeof code === 'string' && sdkCodes.has(code))
       ? ` (${code})`
       : '';
-  return Object.assign(
-    new LlmError(`Copilot SDK ${safeClass}${safeCode}`, 'COPILOT_ERROR'),
-    { status },
+  return copyErrorUsage(
+    Object.assign(
+      new LlmError(`Copilot SDK ${safeClass}${safeCode}`, 'COPILOT_ERROR'),
+      { status },
+    ),
+    error,
   );
 }

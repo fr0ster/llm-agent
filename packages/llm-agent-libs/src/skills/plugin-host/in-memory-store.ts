@@ -14,6 +14,7 @@ import {
   bestFragmentScore,
   CatalogCasError,
   recordVectors,
+  withEmbeddingError,
 } from '@mcp-abap-adt/llm-agent'; // value (class), not a type
 
 interface Row {
@@ -115,10 +116,14 @@ export function makeInMemoryStoreProvider(
         for (const record of records) {
           rows.push({
             record,
-            vector: await embed(record.retrievalText, {
-              ...options,
-              usage: options?.usage?.with({ role: 'embedding' }),
-            }),
+            vector: await withEmbeddingError(
+              () =>
+                embed(record.retrievalText, {
+                  ...options,
+                  usage: options?.usage?.with({ role: 'embedding' }),
+                }),
+              options?.signal,
+            ),
           });
         }
         gens.set(generation, rows);

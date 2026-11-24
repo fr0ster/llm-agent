@@ -8,6 +8,7 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  copyErrorUsage,
   formatTrustTag,
   OrchestratorError,
   overflowError,
@@ -626,10 +627,13 @@ export class PlannerToolsClient implements IMcpClient {
             );
           })();
           if (!result.ok) {
-            const terminal = terminalRunError(result.error.cause);
-            if (terminal) throw terminal;
-            if (result.error.code === 'aborted')
-              throw new OrchestratorError(result.error.message, 'ABORTED');
+            const terminal =
+              toAbortError(result.error.cause, scope.signal) ??
+              (result.error.code === 'aborted'
+                ? new OrchestratorError(result.error.message, 'ABORTED')
+                : terminalRunError(result.error.cause));
+            if (terminal)
+              throw copyErrorUsage(terminal, result.error, terminal);
             throw new Error(`${result.error.code}: ${result.error.message}`);
           }
           scope.signal?.throwIfAborted();

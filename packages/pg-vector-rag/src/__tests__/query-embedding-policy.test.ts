@@ -69,7 +69,7 @@ describe('PgVectorRag query embedding fallback policy', () => {
   for (const fallbackOnQueryEmbeddingError of [undefined, true, false]) {
     const policy = String(fallbackOnQueryEmbeddingError);
 
-    it(`preserves the released independent abort behavior (fallback=${policy})`, async () => {
+    it(`propagates an independent abort (fallback=${policy})`, async () => {
       const failure = new RagError('Embedder aborted', 'ABORTED');
       const { embedder, calls } = makeEmbedder(failure);
       const rag = makeRag(embedder, fallbackOnQueryEmbeddingError);
@@ -78,13 +78,7 @@ describe('PgVectorRag query embedding fallback policy', () => {
       });
 
       assert.ok(!result.ok);
-      if (fallbackOnQueryEmbeddingError === false) {
-        assert.equal(result.error, failure);
-        assert.equal(result.error.code, 'ABORTED');
-      } else {
-        assert.equal(result.error.code, 'QUERY_ERROR');
-        assert.equal(result.error.message, String(failure));
-      }
+      assert.equal(result.error, failure);
       assert.deepEqual(calls, ['query']);
     });
 
@@ -137,8 +131,24 @@ describe('PgVectorRag query embedding fallback policy', () => {
 
     assert.equal(result.ok, false);
     if (result.ok) assert.fail('Expected a failed Result');
-    assert.equal(result.error.code, 'EMBED_ERROR');
+    assert.equal(result.error.code, 'QUERY_ERROR');
     assert.equal(result.error.cause, failure);
     assert.deepEqual(calls, ['query']);
   });
+});
+
+it('keeps UPSERT_ERROR and usage for an ordinary document embedding failure', async () => {
+  const usage = { promptTokens: 3, completionTokens: 0, totalTokens: 3 };
+  const failure = Object.assign(new Error('Embedding request rejected'), {
+    status: 400,
+    usage,
+  });
+  const fail = async () => {
+    throw failure;
+  };
+  const rag = makeRag({ embedDocument: fail, embedQuery: fail }, false);
+  const result = await rag.upsert('document', { id: 'doc' });
+  assert.ok(!result.ok);
+  assert.equal(result.error.code, 'UPSERT_ERROR');
+  assert.deepEqual(result.error.usage, usage);
 });

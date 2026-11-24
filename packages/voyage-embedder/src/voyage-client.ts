@@ -1,11 +1,13 @@
 import type { IApiKeyCredential } from '@mcp-abap-adt/interfaces-auth';
 import {
+  abortRunError,
   beginEmbeddingRequest,
   beginLlmRequest,
   type CallOptions,
   embeddingErrorCode,
   findAbort,
   type IUsageRecorder,
+  overflowError,
   parseRetryAfter,
   RagError,
   scopedUsage,
@@ -153,8 +155,10 @@ export class VoyageClient {
       });
       if (!response.ok) {
         const errorBody = await response.text().catch((error) => {
+          if (findAbort(error, signal)) throw error;
+          const overflow = overflowError(error);
+          if (overflow) throw overflow;
           signal?.throwIfAborted();
-          if (findAbort(error)) throw error;
           return '';
         });
         signal?.throwIfAborted();
@@ -185,7 +189,14 @@ export class VoyageClient {
           : {}),
         error,
       });
-      signal?.throwIfAborted();
+      if (
+        signal?.aborted &&
+        !findAbort(error, signal) &&
+        !overflowError(error)
+      ) {
+        if (endpoint === 'rerank') throw abortRunError(signal.reason, error);
+        signal.throwIfAborted();
+      }
       throw error;
     }
   }

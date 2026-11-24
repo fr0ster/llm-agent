@@ -14,6 +14,7 @@ export {
   embeddingOverflowError,
   toEmbeddingError,
   toRagError,
+  withEmbeddingError,
 } from './rag-error.js';
 export {
   contextExceededError,

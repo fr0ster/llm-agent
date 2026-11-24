@@ -88,6 +88,22 @@ describe('qdrant catalog: createCollection', () => {
       assert.equal(indexOf(stub, 'PUT', `/collections/${STORE}`), -1);
     }));
 
+  it('keeps RAG_CREATE_ERROR for an ordinary dimension probe failure', () =>
+    withStub(async (stub) => {
+      const cause = Object.assign(new Error('Embedding request rejected'), {
+        status: 400,
+      });
+      const result = await providerOn(stub, {
+        async embed() {
+          throw cause;
+        },
+      }).createCollection(STORE, createOpts);
+      assert.ok(!result.ok);
+      assert.equal(result.error.code, 'RAG_CREATE_ERROR');
+      assert.equal(result.error.cause, cause);
+      assert.equal(indexOf(stub, 'PUT', `/collections/${STORE}`), -1);
+    }));
+
   it('uses the explicit dimension in the PUT body without embedding', () =>
     withStub(async (stub) => {
       const embedder: IEmbedder = {

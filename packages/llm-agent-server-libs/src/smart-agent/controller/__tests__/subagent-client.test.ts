@@ -7,7 +7,9 @@ import {
   MODEL_CONTEXT_EXCEEDED,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
+import { LlmReviewer } from '../reviewer.js';
 import { makeSubagentClient } from '../subagent-client.js';
+import { establishTargetState } from '../target-state.js';
 
 const llm = (resp: Result<LlmResponse, LlmError>): ILlm => ({
   model: 's',
@@ -41,8 +43,8 @@ describe('makeSubagentClient', () => {
     assert.equal(r.kind, 'tool_call');
   });
 
-  it('returns the message of a non-overflow error', async () => {
-    const error = new LlmError('boom', 'ABORTED');
+  it('keeps an ordinary error as a message', async () => {
+    const error = new LlmError('boom');
     const c = makeSubagentClient(llm({ ok: false, error }));
     assert.deepEqual(await c.send([{ role: 'user', content: 'hi' }]), {
       kind: 'error',
@@ -57,4 +59,81 @@ describe('makeSubagentClient', () => {
     assert.equal(res.kind, 'error');
     if (res.kind === 'error') assert.equal(res.contextOverflow, error);
   });
+});
+
+for (const code of ['ABORTED', MODEL_CONTEXT_EXCEEDED]) {
+  for (const thrown of [false, true]) {
+    it(
+      'preserves ' +
+        code +
+        ' and usage through controller subagent roles (' +
+        (thrown ? 'thrown' : 'returned') +
+        ')',
+      async () => {
+        const usage = { promptTokens: 1, completionTokens: 2, totalTokens: 3 };
+        const overflow = Object.assign(
+          new LlmError('Context is full', MODEL_CONTEXT_EXCEEDED),
+          { usage },
+        );
+        const error =
+          code === 'ABORTED'
+            ? Object.assign(new LlmError('Cancelled'), {
+                name: 'AbortError',
+                cause: overflow,
+              })
+            : overflow;
+        const provider: ILlm = {
+          async chat() {
+            if (thrown) throw error;
+            return { ok: false, error };
+          },
+          async *streamChat() {},
+        };
+        const client = makeSubagentClient(provider);
+        const result = await client.send([]);
+        assert.equal(result.kind, 'error');
+        const failure = result.abort ?? result.contextOverflow;
+        assert.equal(failure?.code, code);
+        assert.deepEqual(result.usage, usage);
+        const reviewer = new LlmReviewer(client);
+        await assert.rejects(
+          reviewer.review(
+            { name: 'review', instructions: 'Check output' },
+            [],
+            'answer',
+            {},
+          ),
+          { code, usage },
+        );
+        await assert.rejects(
+          establishTargetState({ evaluator: client }, 'prompt', {
+            strategy: 'consumer-confirm',
+            distanceThreshold: 0.25,
+          }),
+          { code, usage },
+        );
+      },
+    );
+  }
+}
+
+it('keeps the existing reviewer and evaluator outcomes for an ordinary error', async () => {
+  const client = makeSubagentClient(
+    llm({ ok: false, error: new LlmError('Unavailable') }),
+  );
+  const reviewer = new LlmReviewer(client);
+  assert.deepEqual(
+    await reviewer.review(
+      { name: 'review', instructions: 'Check output' },
+      [],
+      'answer',
+      {},
+    ),
+    { kind: 'judge-failure', reason: 'reviewer error: Unavailable' },
+  );
+  const result = await establishTargetState({ evaluator: client }, 'prompt', {
+    strategy: 'consumer-confirm',
+    distanceThreshold: 0.25,
+  });
+  assert.equal(result.kind, 'needs-confirmation');
 });

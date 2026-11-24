@@ -1,3 +1,4 @@
+import { withEmbeddingError } from '../errors/rag-error.js';
 /**
  * Conformance kit for a store with a `shared` table layout: one documents
  * table holds every collection's rows, told apart by a collection column, and
@@ -73,7 +74,11 @@ async function textOf(rag: IRag, id: string): Promise<string | null> {
 async function rankedIds(rag: IRag, text: string, k = 10): Promise<string[]> {
   const embedder = conformanceEmbedder();
   const res = await rag.query(
-    { text, toVector: async () => (await embedder.embed(text)).vector },
+    {
+      text,
+      toVector: async () =>
+        (await withEmbeddingError(() => embedder.embed(text))).vector,
+    },
     k,
   );
   if (!res.ok) throw res.error;
@@ -222,7 +227,8 @@ export const sharedTableConformanceCases: readonly SharedTableConformanceCase[] 
           const res = await rag.query(
             {
               text: Q,
-              toVector: async () => (await embedder.embed(Q)).vector,
+              toVector: async () =>
+                (await withEmbeddingError(() => embedder.embed(Q))).vector,
             },
             10,
             { ragFilter },

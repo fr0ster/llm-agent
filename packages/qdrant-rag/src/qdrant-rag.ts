@@ -6,9 +6,11 @@ import type {
   IRetrievalEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  abortRunError,
   assertNonEmptyFilter,
   assertScanOptions,
   type CallOptions,
+  copyErrorUsage,
   decodeListCursor,
   embedRecord,
   encodeListCursor,
@@ -33,6 +35,8 @@ import {
   ragIdentityFilter,
   recordVectors,
   TextOnlyEmbedding,
+  toAbortError,
+  toRagError,
   validateRagMetadata,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -289,12 +293,10 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
         options,
       );
     } catch (err) {
-      const overflow = overflowError(err, options?.signal);
-      if (overflow) return { ok: false, error: overflow };
-      if (options?.signal?.aborted)
-        return { ok: false, error: new RagError('Aborted', 'ABORTED') };
-      if (err instanceof RagError) return { ok: false, error: err };
-      return { ok: false, error: new RagError(String(err), 'UPSERT_ERROR') };
+      return {
+        ok: false,
+        error: this._scanFailure(err, 'UPSERT_ERROR', options),
+      };
     }
   }
 
@@ -397,11 +399,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
     } catch (err) {
       return {
         ok: false,
-        error:
-          overflowError(err, options?.signal) ??
-          (err instanceof RagError
-            ? err
-            : this._scanFailure(err, 'QUERY_ERROR', options)),
+        error: this._scanFailure(err, 'QUERY_ERROR', options),
       };
     }
   }
@@ -468,8 +466,10 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
         value: { ...record, score: 1 },
       };
     } catch (err) {
-      if (err instanceof RagError) return { ok: false, error: err };
-      return { ok: false, error: new RagError(String(err), 'QUERY_ERROR') };
+      return {
+        ok: false,
+        error: toRagError(err, 'QUERY_ERROR', options?.signal),
+      };
     }
   }
 
@@ -514,11 +514,12 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
     } catch (error) {
       return {
         ok: false,
-        error: options?.signal?.aborted
-          ? new RagError('Aborted', 'ABORTED')
-          : error instanceof RagError
-            ? error
-            : new RagError(String(error), 'QUERY_ERROR'),
+        error:
+          toAbortError(error, options?.signal) ??
+          overflowError(error) ??
+          (options?.signal?.aborted
+            ? abortRunError(options.signal.reason, error)
+            : toRagError(error, 'QUERY_ERROR')),
       };
     }
   }
@@ -576,14 +577,20 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
   }
 
   /** A RagError passes through; an abort is ABORTED; anything else gets `code`. */
-  private _scanFailure(
-    err: unknown,
+  private _scanFailure<T>(
+    err: T,
     code: string,
     options?: CallOptions,
   ): RagError {
-    if (err instanceof RagError) return err;
-    if (options?.signal?.aborted) return new RagError('Aborted', 'ABORTED');
-    return new RagError(String(err), code);
+    return (
+      toAbortError(err, options?.signal) ??
+      overflowError(err) ??
+      (err instanceof RagError
+        ? copyErrorUsage(err, err)
+        : options?.signal?.aborted
+          ? abortRunError(options.signal.reason, err)
+          : toRagError(err, code))
+    );
   }
 
   async healthCheck(options?: CallOptions): Promise<Result<void, RagError>> {
@@ -606,10 +613,16 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
     } catch (err) {
       return {
         ok: false,
-        error: new RagError(
-          `Qdrant health check failed: ${String(err)}`,
-          'HEALTH_CHECK_ERROR',
-        ),
+        error:
+          toAbortError(err, options?.signal) ??
+          overflowError(err) ??
+          copyErrorUsage(
+            new RagError(
+              `Qdrant health check failed: ${String(err)}`,
+              'HEALTH_CHECK_ERROR',
+            ),
+            err,
+          ),
       };
     }
   }
@@ -645,10 +658,9 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
           }
           return { ok: true, value: true };
         } catch (err) {
-          if (err instanceof RagError) return { ok: false, error: err };
           return {
             ok: false,
-            error: new RagError(String(err), 'DELETE_ERROR'),
+            error: toRagError(err, 'DELETE_ERROR', options?.signal),
           };
         }
       },
@@ -672,8 +684,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
           }
           return { ok: true, value: undefined };
         } catch (err) {
-          if (err instanceof RagError) return { ok: false, error: err };
-          return { ok: false, error: new RagError(String(err), 'CLEAR_ERROR') };
+          return { ok: false, error: toRagError(err, 'CLEAR_ERROR') };
         }
       },
       upsertPrecomputedRaw: async (id, text, vector, metadata, options) => {

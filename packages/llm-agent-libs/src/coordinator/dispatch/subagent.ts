@@ -6,7 +6,13 @@ import type {
   PlanStep,
   StepResult,
 } from '@mcp-abap-adt/llm-agent';
-import { terminalRunError } from '@mcp-abap-adt/llm-agent';
+import {
+  copyErrorUsage,
+  errorUsage,
+  overflowError,
+  terminalRunError,
+  toAbortError,
+} from '@mcp-abap-adt/llm-agent';
 import { composeTask } from './compose-task.js';
 
 /**
@@ -91,6 +97,10 @@ export class SubAgentDispatch implements IDispatchStrategy {
         signal: ctx.signal,
       });
 
+      const interruption =
+        toAbortError(res.error, ctx.signal) ?? overflowError(res.error);
+      if (interruption) throw copyErrorUsage(interruption, interruption, res);
+
       // Epicfail propagation: do NOT retry, do NOT transform — surface the
       // flat trace upward in StepResult unchanged (or build one if absent).
       if (res.errorClass === 'epicfail') {
@@ -119,14 +129,18 @@ export class SubAgentDispatch implements IDispatchStrategy {
         ok: true,
       };
     } catch (err) {
-      const terminalError = terminalRunError(err);
+      const terminalError = terminalRunError(err, ctx.signal);
+      const { usage } = errorUsage(err);
       return {
         stepId: step.id,
         output: '',
         durationMs: Date.now() - started,
         ok: false,
-        error: err instanceof Error ? err.message : String(err),
+        error:
+          terminalError?.message ??
+          (err instanceof Error ? err.message : String(err)),
         ...(terminalError ? { terminalError } : {}),
+        ...(usage ? { usage } : {}),
       };
     }
   }

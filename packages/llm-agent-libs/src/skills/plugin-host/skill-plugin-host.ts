@@ -18,6 +18,7 @@ import {
   CatalogCasError,
   overflowError,
   toAbortError,
+  withEmbeddingError,
 } from '@mcp-abap-adt/llm-agent'; // value (class), not a type
 import { makeCompatibleSkillsRag } from './compatible-skills-rag.js';
 
@@ -200,10 +201,14 @@ function makeIngestHost(deps: IngestHostDeps): ISkillPluginHost {
   let resolvedDimension = deps.dimension;
   async function ensureDimension(options?: CallOptions): Promise<number> {
     if (resolvedDimension === undefined) {
-      const probe = await deps.embedder.embedQuery('dimension probe', {
-        ...options,
-        usage: options?.usage?.with({ role: 'embedding' }),
-      });
+      const probe = await withEmbeddingError(
+        () =>
+          deps.embedder.embedQuery('dimension probe', {
+            ...options,
+            usage: options?.usage?.with({ role: 'embedding' }),
+          }),
+        options?.signal,
+      );
       resolvedDimension = probe.vector.length;
     }
     return resolvedDimension;

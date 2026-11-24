@@ -237,7 +237,7 @@ for (const layout of ['shared', 'per-collection'] as const) {
       assert.equal(pg.statements.length, before);
     });
 
-    it('an ABORTED thrown inside an existing operation keeps its 30.2.0 code', async () => {
+    it('query and upsert propagate ABORTED from the embedder', async () => {
       const pg = fake();
       // A signal-bound embedder (RetryEmbedder) throws exactly this.
       const aborting = symmetricEmbedder({
@@ -257,10 +257,10 @@ for (const layout of ['shared', 'per-collection'] as const) {
       ) as Store;
       const u = await store.upsert('text', { id: 'a' });
       assert.ok(!u.ok);
-      assert.equal(u.error.code, 'UPSERT_ERROR');
+      assert.equal(u.error.code, 'ABORTED');
       const q = await store.query(new QueryEmbedding('text', aborting), 3);
       assert.ok(!q.ok);
-      assert.equal(q.error.code, 'QUERY_ERROR');
+      assert.equal(q.error.code, 'ABORTED');
     });
 
     it('scan and deleteWhere pass an ABORTED from the driver through', async () => {

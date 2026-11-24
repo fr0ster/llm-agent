@@ -255,7 +255,7 @@ it('overlay health check preserves returned overflow after a sibling rejection',
   });
 });
 
-it('overlay keeps the first returned error when no store reports overflow', async () => {
+it('overlay prefers a returned abort over an earlier ordinary error', async () => {
   const first = new RagError('First store unavailable');
   const second = new RagError('Second store aborted', 'ABORTED');
   const base = stub([]);
@@ -264,6 +264,6 @@ it('overlay keeps the first returned error when no store reports overflow', asyn
   overlay.query = async () => ({ ok: false, error: second });
   assert.deepEqual(
     await new OverlayRag(base, overlay).query(new TextOnlyEmbedding('q'), 1),
-    { ok: false, error: first },
+    { ok: false, error: second },
   );
 });

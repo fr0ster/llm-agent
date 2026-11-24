@@ -5,6 +5,7 @@ import type {
   IEmbedResult,
   IUsageRecorder,
 } from '@mcp-abap-adt/llm-agent';
+import { withEmbeddingError } from '@mcp-abap-adt/llm-agent';
 import { FoundationModelsEmbedder } from './foundation-embedder.js';
 import {
   OrchestrationScenarioEmbedder,
@@ -84,10 +85,18 @@ export class SapAiCoreEmbedder implements IEmbedderBatch {
   }
 
   embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
-    return this.backend.embed(text, options);
+    return withEmbeddingError(
+      () => this.backend.embed(text, options),
+      options?.signal,
+      'preserve-rejection',
+    );
   }
 
   embedBatch(texts: string[], options?: CallOptions): Promise<IEmbedResult[]> {
-    return this.backend.embedBatch(texts, options);
+    return withEmbeddingError(
+      () => this.backend.embedBatch(texts, options),
+      options?.signal,
+      'preserve-rejection',
+    );
   }
 }
