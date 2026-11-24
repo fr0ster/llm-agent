@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## 38.1.0
+
+### Minor Changes
+
+- 8773d04: Add a tool retrieval contract and a configurable LLM selector for MCP tool catalogues. Preserve RAG-based tool selection as the default and support a request-scoped candidate filter for both retrievers.
+
 ## 38.0.2
 
 ### Patch Changes
