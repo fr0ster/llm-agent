@@ -85,7 +85,7 @@ export function meterWorkers(
               ));
         } catch (error) {
           const calls = logUsage(
-            error as WorkerUsage | null,
+            errorUsage(error),
             trace?.traceId,
             Date.now() - start,
             observed,

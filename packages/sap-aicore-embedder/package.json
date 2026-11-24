@@ -36,7 +36,7 @@
   },
   "peerDependencies": {
     "@mcp-abap-adt/interfaces-auth": "^2.1.0",
-    "@mcp-abap-adt/llm-agent": "^35.4.0",
+    "@mcp-abap-adt/llm-agent": "^35.0.0",
     "@mcp-abap-adt/sap-aicore-auth": "^30.9.1"
   }
 }

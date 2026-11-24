@@ -7,7 +7,7 @@ import type {
   KnowledgeFilter,
   LlmTool,
 } from '@mcp-abap-adt/llm-agent';
-import { overflowError } from '@mcp-abap-adt/llm-agent';
+import { overflowError, toAbortError } from '@mcp-abap-adt/llm-agent';
 import { isDebugArea } from '../logger/debug-areas.js';
 
 /**
@@ -250,7 +250,7 @@ export class InMemoryKnowledgeBackend implements KnowledgeBackend {
     try {
       await this.semantic?.upsert(sid, entry, options);
     } catch (e) {
-      const overflow = overflowError(e);
+      const overflow = toAbortError(e, options?.signal) ?? overflowError(e);
       if (overflow) throw overflow;
       if (isDebugArea('rag'))
         console.error(

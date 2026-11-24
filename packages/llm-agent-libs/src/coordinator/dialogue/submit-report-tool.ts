@@ -4,6 +4,7 @@ import {
   type IMcpClient,
   type LlmTool,
   overflowError,
+  toAbortError,
 } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 
@@ -97,7 +98,9 @@ export async function withSubmitReport(
     }
     const listed = await client.listTools(options);
     if (!listed.ok) {
-      const overflow = overflowError(listed.error);
+      const overflow =
+        toAbortError(listed.error, options?.signal) ??
+        overflowError(listed.error);
       if (overflow) throw overflow;
     }
     const tool = listed.ok

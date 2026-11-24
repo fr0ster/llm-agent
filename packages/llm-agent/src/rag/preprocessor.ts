@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { toAbortError } from '../errors/abort-run-error.js';
 import { overflowError } from '../errors/terminal-run-error.js';
 import type { ILlm } from '../interfaces/llm.js';
 import type { IRequestLogger } from '../interfaces/request-logger.js';
@@ -108,7 +109,8 @@ export class TranslatePreprocessor implements IQueryPreprocessor {
 
       return { ok: true, value: res.value.content.trim() };
     } catch (error) {
-      const terminal = overflowError(error);
+      const terminal =
+        toAbortError(error, options?.signal) ?? overflowError(error);
       if (terminal) return { ok: false, error: terminal };
       return { ok: true, value: text };
     }
@@ -173,7 +175,8 @@ export class ExpandPreprocessor implements IQueryPreprocessor {
 
       return { ok: true, value: `${text} ${res.value.content.trim()}` };
     } catch (error) {
-      const terminal = overflowError(error);
+      const terminal =
+        toAbortError(error, options?.signal) ?? overflowError(error);
       if (terminal) return { ok: false, error: terminal };
       return { ok: true, value: text };
     }
@@ -259,7 +262,8 @@ export class IntentEnricher implements IDocumentEnricher {
         value: `${text}\nIntent: ${res.value.content.trim()}`,
       };
     } catch (error) {
-      const terminal = overflowError(error);
+      const terminal =
+        toAbortError(error, options?.signal) ?? overflowError(error);
       if (terminal) return { ok: false, error: terminal };
       return { ok: true, value: text };
     }

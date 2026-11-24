@@ -26,6 +26,7 @@ import {
   type Result,
   ragCollectionNotFound,
   ragOwnerKeys,
+  toEmbeddingError,
   validateRagCatalogPatch,
   validateRagOwner,
   validateRagStoreName,
@@ -584,9 +585,15 @@ export class QdrantRagProvider
     name: string,
     opts: RagProviderCreateCollectionOptions,
   ): Promise<Result<void, RagError>> {
-    const dimension =
-      opts.dimension ??
-      (await this.embedder.embedDocument(DIMENSION_PROBE)).vector.length;
+    let dimension = opts.dimension;
+    if (dimension === undefined) {
+      try {
+        dimension = (await this.embedder.embedDocument(DIMENSION_PROBE)).vector
+          .length;
+      } catch (error) {
+        return { ok: false, error: toEmbeddingError(error) };
+      }
+    }
     const res = await this.request(`/collections/${name}`, {
       method: 'PUT',
       body: JSON.stringify({

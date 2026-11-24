@@ -9,6 +9,7 @@ import type {
   PlannerMemoryEntry,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  abortRunError,
   collectWithContextOverflow,
   overflowError,
   QueryEmbedding,
@@ -272,7 +273,9 @@ export async function retrievePlannerContext(
   } catch (error) {
     const terminal =
       overflowError(error) ??
-      terminalRunError(options.signal?.reason) ??
+      (options.signal?.aborted
+        ? abortRunError(options.signal.reason, error)
+        : undefined) ??
       terminalRunError(error);
     if (terminal) throw terminal;
     warn('Planner retrieval deadline reached');

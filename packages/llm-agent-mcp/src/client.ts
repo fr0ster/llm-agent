@@ -436,6 +436,7 @@ export class MCPClientWrapper {
     try {
       return await performList();
     } catch (error) {
+      if (findAbort(error)) throw error;
       const terminal = overflowError(error);
       if (terminal) throw terminal;
       const errorMessage =
@@ -448,6 +449,7 @@ export class MCPClientWrapper {
         await this.connect();
         return await performList();
       } catch (error) {
+        if (findAbort(error)) throw error;
         const terminal = overflowError(error);
         if (terminal) throw terminal;
         return this.tools; // Return cached tools if reconnect fails

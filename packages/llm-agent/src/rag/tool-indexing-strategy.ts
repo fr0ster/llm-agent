@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { toAbortError } from '../errors/abort-run-error.js';
 import { overflowError } from '../errors/terminal-run-error.js';
 import type { ILlm } from '../interfaces/llm.js';
 import type { IRequestLogger } from '../interfaces/request-logger.js';
@@ -130,7 +131,8 @@ export class IntentToolIndexing implements IToolIndexingStrategy {
         },
       ];
     } catch (error) {
-      const terminal = overflowError(error);
+      const terminal =
+        toAbortError(error, options?.signal) ?? overflowError(error);
       if (terminal) throw terminal;
       return [];
     }

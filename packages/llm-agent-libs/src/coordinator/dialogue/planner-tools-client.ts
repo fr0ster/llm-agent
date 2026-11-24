@@ -12,6 +12,7 @@ import {
   OrchestratorError,
   overflowError,
   terminalRunError,
+  toAbortError,
 } from '@mcp-abap-adt/llm-agent';
 import { z } from 'zod';
 import { currentPlannerScope, type PlannerScope } from './planner-scope.js';
@@ -845,8 +846,10 @@ export class PlannerToolsClient implements IMcpClient {
       }
     } catch (error) {
       const scope = currentPlannerScope();
+      const abort = toAbortError(error, scope?.signal);
       const overflow = overflowError(error);
       const terminal =
+        abort ??
         overflow ??
         (error instanceof TerminalDialogueError
           ? error
@@ -855,7 +858,7 @@ export class PlannerToolsClient implements IMcpClient {
         if (name === 'plan_create' || name === 'plan_revise')
           scope?.onPlanAuthorError?.(terminal);
         scope?.onTerminalError?.(terminal);
-        if (overflow || !scope?.signal?.aborted)
+        if (abort || overflow || !scope?.signal?.aborted)
           return { ok: false, error: terminal };
       }
       return textResult(

@@ -1,5 +1,6 @@
 import { setImmediate } from 'node:timers/promises';
 import { findAbort } from '../errors/abort-run-error.js';
+import { toEmbeddingError } from '../errors/rag-error.js';
 import { overflowError } from '../errors/terminal-run-error.js';
 import {
   type IDocumentEmbedder,
@@ -117,10 +118,20 @@ export async function embedDocumentRecords(
     usage: options?.usage?.with({ role: 'embedding' }),
   };
   const run = <T>(request: () => Promise<T>) =>
-    retryRagThrottle(request, options?.signal);
+    retryRagThrottle(async () => {
+      try {
+        return await request();
+      } catch (error) {
+        throw toEmbeddingError(error, callOptions.signal);
+      }
+    }, callOptions.signal);
   const getCapacity = embedder.getMaxInputChars?.bind(embedder);
   const size =
-    (getCapacity && (await run(() => getCapacity(callOptions)))) ??
+    (getCapacity &&
+      (await retryRagThrottle(
+        () => getCapacity(callOptions),
+        callOptions.signal,
+      ))) ??
     fragmentSizeChars;
   if (!Number.isSafeInteger(size) || size < 1)
     throw new RangeError(

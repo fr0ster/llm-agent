@@ -17,6 +17,7 @@ import {
   QueryEmbedding,
   RagAccessDeniedError,
   TextOnlyEmbedding,
+  toAbortError,
   toolNameFromRecord,
 } from '@mcp-abap-adt/llm-agent';
 import { callerResolutionKey } from '../policy/caller-identity.js';
@@ -108,12 +109,15 @@ export class RagOrchestrator implements IRagOrchestrator {
             );
             if (expandResult.ok) translatedText = expandResult.value;
             else {
-              const terminal = overflowError(expandResult.error);
+              const terminal =
+                toAbortError(expandResult.error, opts?.signal) ??
+                overflowError(expandResult.error);
               if (terminal) return { ok: false, error: terminal };
             }
           }
         } catch (error) {
-          const terminal = overflowError(error);
+          const terminal =
+            toAbortError(error, opts?.signal) ?? overflowError(error);
           if (terminal) return { ok: false, error: terminal };
           throw error;
         }
@@ -182,6 +186,8 @@ export class RagOrchestrator implements IRagOrchestrator {
               opts,
             );
             if (rr.ok) return { name, results: rr.value };
+            const aborted = toAbortError(rr.error, opts?.signal);
+            if (aborted) throw aborted;
             return { name, results, error: rr.error };
           }
           return { name, results };
@@ -321,7 +327,9 @@ export class RagOrchestrator implements IRagOrchestrator {
 
         const allSkillsResult = await this.deps.skillManager.listSkills(opts);
         if (!allSkillsResult.ok) {
-          const overflow = overflowError(allSkillsResult.error);
+          const overflow =
+            toAbortError(allSkillsResult.error, opts?.signal) ??
+            overflowError(allSkillsResult.error);
           if (overflow) return { ok: false, error: overflow };
         } else {
           const allSkills = allSkillsResult.value;
@@ -330,7 +338,9 @@ export class RagOrchestrator implements IRagOrchestrator {
           for (const skill of matched) {
             const contentResult = await skill.getContent(undefined, opts);
             if (!contentResult.ok) {
-              const overflow = overflowError(contentResult.error);
+              const overflow =
+                toAbortError(contentResult.error, opts?.signal) ??
+                overflowError(contentResult.error);
               if (overflow) return { ok: false, error: overflow };
             } else if (contentResult.value) {
               contentParts.push(

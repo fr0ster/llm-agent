@@ -1,4 +1,8 @@
-import { overflowError, stampRagOwner } from '@mcp-abap-adt/llm-agent';
+import {
+  overflowError,
+  stampRagOwner,
+  toAbortError,
+} from '@mcp-abap-adt/llm-agent';
 import {
   type CallerResolution,
   callerResolutionKey,
@@ -46,7 +50,9 @@ export async function summarizeAndStore(
 
   const result = await summarizer.summarize(turn, options);
   if (!result.ok) {
-    const terminal = overflowError(result.error);
+    const terminal =
+      toAbortError(result.error, options?.signal) ??
+      overflowError(result.error);
     if (terminal) throw terminal;
     log?.('history_summarize_failed', { error: result.error.message });
   }
@@ -69,7 +75,9 @@ export async function summarizeAndStore(
       options,
     );
     if (!upsertResult.ok) {
-      const terminal = overflowError(upsertResult.error);
+      const terminal =
+        toAbortError(upsertResult.error, options?.signal) ??
+        overflowError(upsertResult.error);
       if (terminal) throw terminal;
       log?.('history_upsert_failed', { error: upsertResult.error.message });
     }
@@ -128,7 +136,8 @@ export class HistoryUpsertHandler implements IStageHandler {
 
       span.setStatus('ok');
     } catch (error) {
-      const terminal = overflowError(error);
+      const terminal =
+        toAbortError(error, ctx.options?.signal) ?? overflowError(error);
       if (terminal) throw terminal;
       span.setStatus('error', 'history upsert failed');
     }

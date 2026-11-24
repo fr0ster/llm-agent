@@ -16,6 +16,7 @@ import {
   overflowError,
   QueryEmbedding,
   TextOnlyEmbedding,
+  toAbortError,
 } from '@mcp-abap-adt/llm-agent';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
@@ -90,7 +91,9 @@ export class SkillSelectHandler implements IStageHandler {
 
     const allSkillsResult = await ctx.skillManager.listSkills(ctx.options);
     if (!allSkillsResult.ok) {
-      const overflow = overflowError(allSkillsResult.error);
+      const overflow =
+        toAbortError(allSkillsResult.error, ctx.options?.signal) ??
+        overflowError(allSkillsResult.error);
       if (overflow) {
         ctx.error = overflow;
         return false;
@@ -114,7 +117,9 @@ export class SkillSelectHandler implements IStageHandler {
         ctx.options,
       );
       if (!contentResult.ok) {
-        const overflow = overflowError(contentResult.error);
+        const overflow =
+          toAbortError(contentResult.error, ctx.options?.signal) ??
+          overflowError(contentResult.error);
         if (overflow) {
           ctx.error = overflow;
           return false;

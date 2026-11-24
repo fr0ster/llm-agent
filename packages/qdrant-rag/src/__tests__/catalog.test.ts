@@ -7,6 +7,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   CatalogRecordDeleteError,
+  EMBEDDING_CONTEXT_EXCEEDED,
   RagError,
   symmetricEmbedder,
 } from '@mcp-abap-adt/llm-agent';
@@ -72,6 +73,21 @@ async function seedRecord(
 }
 
 describe('qdrant catalog: createCollection', () => {
+  it('returns a typed document probe overflow before issuing a store write', () =>
+    withStub(async (stub) => {
+      const cause = Object.assign(new Error('input too long'), { status: 400 });
+      const result = await providerOn(stub, {
+        async embed() {
+          throw cause;
+        },
+      }).createCollection(STORE, createOpts);
+
+      assert.ok(!result.ok);
+      assert.equal(result.error.code, EMBEDDING_CONTEXT_EXCEEDED);
+      assert.equal(result.error.cause, cause);
+      assert.equal(indexOf(stub, 'PUT', `/collections/${STORE}`), -1);
+    }));
+
   it('uses the explicit dimension in the PUT body without embedding', () =>
     withStub(async (stub) => {
       const embedder: IEmbedder = {

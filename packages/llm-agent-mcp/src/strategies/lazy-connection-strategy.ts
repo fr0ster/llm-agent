@@ -8,7 +8,11 @@ import type {
   McpConnectionConfig,
   McpConnectionResult,
 } from '@mcp-abap-adt/llm-agent';
-import { normaliseLogger, overflowError } from '@mcp-abap-adt/llm-agent';
+import {
+  normaliseLogger,
+  overflowError,
+  toAbortError,
+} from '@mcp-abap-adt/llm-agent';
 import { createDefaultMcpClient } from '../factory.js';
 
 interface Slot {
@@ -115,7 +119,7 @@ export class LazyConnectionStrategy
           slot.healthy = true;
         } catch (err) {
           slot.healthy = false;
-          const overflow = overflowError(err);
+          const overflow = toAbortError(err) ?? overflowError(err);
           if (overflow) throw overflow;
           // Surface WHY a target is down — otherwise operators chase "agent has no
           // tools" with no log line pointing at the cause (unreachable host, bad
@@ -166,12 +170,13 @@ export class LazyConnectionStrategy
           ? await client.healthCheck()
           : await client.listTools();
       if (!result.ok) {
-        const overflow = overflowError(result.error);
+        const overflow =
+          toAbortError(result.error) ?? overflowError(result.error);
         if (overflow) throw overflow;
       }
       return result.ok;
     } catch (error) {
-      const overflow = overflowError(error);
+      const overflow = toAbortError(error) ?? overflowError(error);
       if (overflow) throw overflow;
       return false;
     }

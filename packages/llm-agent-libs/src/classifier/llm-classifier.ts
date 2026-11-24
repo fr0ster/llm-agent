@@ -1,18 +1,22 @@
-import { randomUUID } from 'node:crypto';
 import type {
   ILlm,
   IRequestLogger,
   ISubpromptClassifier,
+  LlmUsageAttribution,
   Message,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  addCacheTokenUsage,
+  abortRunError,
   type CallOptions,
   ClassifierError,
+  copyErrorUsage,
+  errorUsage,
   overflowError,
   type Result,
   type Subprompt,
+  toAbortError,
 } from '@mcp-abap-adt/llm-agent';
+import { usageCallRecords } from '../logger/llm-call-usage.js';
 import { withAbort } from '../utils/with-abort.js';
 
 export const DEFAULT_CLASSIFIER_PROMPT = `You are a Semantic Intent Analyzer. Decompose the user message into logical tasks.
@@ -105,9 +109,10 @@ export class LlmClassifier implements ISubpromptClassifier {
     text: string,
     options?: CallOptions,
   ): Promise<Result<Subprompt[], ClassifierError>> {
+    let chatStart: number | undefined;
+    const logger = options?.requestLogger ?? this.requestLogger;
     try {
-      if (options?.signal?.aborted)
-        return { ok: false, error: new ClassifierError('Aborted', 'ABORTED') };
+      options?.signal?.throwIfAborted();
       if (this.cache?.has(text)) {
         const cached = this.cache.get(text);
         if (cached) {
@@ -119,58 +124,81 @@ export class LlmClassifier implements ISubpromptClassifier {
         { role: 'system', content: this.systemPrompt },
         { role: 'user', content: text },
       ];
-      const chatStart = Date.now();
+      chatStart = Date.now();
       const llmResult = await withAbort(
         this.llm.chat(messages, [], {
           ...options,
           usage: options?.usage?.with({ role: 'classifier' }),
         }),
         options?.signal,
-        () => new ClassifierError('Aborted', 'ABORTED'),
+        () => abortRunError(options?.signal?.reason),
       );
-      const requestLogger = options?.requestLogger ?? this.requestLogger;
-      if (requestLogger) {
-        requestLogger.logLlmCall({
-          callId: randomUUID(),
-          component: 'classifier',
-          model: this.llm.model ?? 'unknown',
-          ...addCacheTokenUsage(
-            undefined,
-            llmResult.ok ? llmResult.value.usage : undefined,
-          ),
-          promptTokens: llmResult.ok
-            ? (llmResult.value.usage?.promptTokens ?? 0)
-            : 0,
-          completionTokens: llmResult.ok
-            ? (llmResult.value.usage?.completionTokens ?? 0)
-            : 0,
-          totalTokens: llmResult.ok
-            ? (llmResult.value.usage?.totalTokens ?? 0)
-            : 0,
-          durationMs: Date.now() - chatStart,
-          requestId: options?.trace?.traceId,
-        });
+      const durationMs = Date.now() - chatStart;
+      chatStart = undefined;
+      if (logger) {
+        this.logUsage(
+          logger,
+          llmResult.ok ? llmResult.value : errorUsage(llmResult.error),
+          durationMs,
+          options,
+          true,
+        );
       }
       if (!llmResult.ok) {
-        const terminal = overflowError(llmResult.error);
+        const { error } = llmResult;
         return {
           ok: false,
-          error:
-            terminal ??
-            new ClassifierError(llmResult.error.message, llmResult.error.code),
+          error: copyErrorUsage(
+            toAbortError(error, options?.signal) ??
+              overflowError(error) ??
+              new ClassifierError(error.message, error.code),
+            error,
+          ),
         };
       }
 
       const subprompts = parseSubprompts(llmResult.value.content);
       this.cache?.set(text, subprompts);
       return { ok: true, value: subprompts };
-    } catch (err) {
-      if (err instanceof ClassifierError) return { ok: false, error: err };
+    } catch (error) {
+      if (logger && chatStart !== undefined) {
+        this.logUsage(
+          logger,
+          errorUsage(error),
+          Date.now() - chatStart,
+          options,
+          false,
+        );
+      }
       return {
         ok: false,
-        error:
-          overflowError(err) ?? new ClassifierError(String(err), 'LLM_ERROR'),
+        error: copyErrorUsage(
+          toAbortError(error, options?.signal) ??
+            overflowError(error) ??
+            (error instanceof ClassifierError
+              ? error
+              : new ClassifierError(String(error), 'LLM_ERROR')),
+          error,
+        ),
       };
+    }
+  }
+
+  private logUsage(
+    logger: IRequestLogger,
+    attribution: LlmUsageAttribution,
+    durationMs: number,
+    options: CallOptions | undefined,
+    countEmpty: boolean,
+  ): void {
+    for (const call of usageCallRecords(
+      { ...attribution, model: attribution.model ?? this.llm.model },
+      'classifier',
+      durationMs,
+      undefined,
+      countEmpty,
+    )) {
+      logger.logLlmCall({ ...call, requestId: options?.trace?.traceId });
     }
   }
 }

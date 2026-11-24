@@ -5,7 +5,11 @@ import type {
   McpCallResult,
   McpClientDescriptor,
 } from '@mcp-abap-adt/llm-agent';
-import { bindToolCallName, overflowError } from '@mcp-abap-adt/llm-agent';
+import {
+  bindToolCallName,
+  overflowError,
+  toAbortError,
+} from '@mcp-abap-adt/llm-agent';
 import { DefaultMcpFailureClassifier } from '@mcp-abap-adt/llm-agent-mcp';
 import { mcpContentToText } from '../../mcp/mcp-content.js';
 
@@ -109,7 +113,8 @@ export function buildNamespacedMcpBridge(
 
     const result = await client.callTool(name, safeArgs, opts);
     if (!result.ok) {
-      const terminal = overflowError(result.error);
+      const terminal =
+        toAbortError(result.error, opts?.signal) ?? overflowError(result.error);
       if (terminal) throw terminal;
       // Availability failure → fail loud; a tool-level error → LLM feedback
       // text WITH isError:true so the caller can see it failed (#213).

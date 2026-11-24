@@ -492,7 +492,9 @@ export async function* executeToolBatchWithHeartbeat(
     toolSpan.setStatus(res.ok ? 'ok' : 'error', res.ok ? undefined : text);
     toolSpan.end();
     if (!res.ok) {
-      const terminal = overflowError(res.error, options?.signal);
+      const terminal =
+        toAbortError(res.error, options?.signal) ??
+        overflowError(res.error, options?.signal);
       if (terminal) throw terminal;
     }
     return {

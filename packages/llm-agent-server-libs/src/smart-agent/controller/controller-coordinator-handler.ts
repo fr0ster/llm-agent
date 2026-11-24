@@ -24,6 +24,7 @@ import {
   SmartAgentError,
   type StepRoundState,
   type ToolLoopContextStrategyFactory,
+  toAbortError,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -1806,7 +1807,8 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             usage: ctx.options?.usage?.with({ role: 'executor' }),
           });
         } catch (mcpErr) {
-          const terminal = overflowError(mcpErr);
+          const terminal =
+            toAbortError(mcpErr, ctx.options?.signal) ?? overflowError(mcpErr);
           if (terminal) throw terminal;
           ctx.options?.sessionLogger?.logStep(
             'mcp_tool_call',
@@ -2202,7 +2204,8 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           }
           answer = composed;
         } catch (e) {
-          const terminal = overflowError(e);
+          const terminal =
+            toAbortError(e, ctx.options?.signal) ?? overflowError(e);
           if (terminal) throw terminal;
           bundle.finalizeAttempt = (bundle.finalizeAttempt ?? 0) + 1;
           await persistBundle(deps.backend, sessionId, bundle);

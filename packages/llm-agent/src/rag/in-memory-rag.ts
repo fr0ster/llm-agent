@@ -1,4 +1,5 @@
 import { randomUUID as listStoreId, randomUUID } from 'node:crypto';
+import { toAbortError } from '../errors/abort-run-error.js';
 import { overflowError } from '../errors/terminal-run-error.js';
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type {
@@ -136,12 +137,15 @@ export class InMemoryRag implements IRag, IRagScanner, IRagFilteredDeleter {
         const eResult = await enricher.enrich(enrichedText, options);
         if (eResult.ok) enrichedText = eResult.value;
         else {
-          const terminal = overflowError(eResult.error);
+          const terminal =
+            toAbortError(eResult.error, options?.signal) ??
+            overflowError(eResult.error);
           if (terminal) return { ok: false, error: terminal };
         }
       }
     } catch (error) {
-      const terminal = overflowError(error);
+      const terminal =
+        toAbortError(error, options?.signal) ?? overflowError(error);
       if (terminal) return { ok: false, error: terminal };
       throw error;
     }
@@ -262,12 +266,15 @@ export class InMemoryRag implements IRag, IRagScanner, IRagFilteredDeleter {
         const ppResult = await pp.process(searchText, options);
         if (ppResult.ok) searchText = ppResult.value;
         else {
-          const terminal = overflowError(ppResult.error);
+          const terminal =
+            toAbortError(ppResult.error, options?.signal) ??
+            overflowError(ppResult.error);
           if (terminal) return { ok: false, error: terminal };
         }
       }
     } catch (error) {
-      const terminal = overflowError(error);
+      const terminal =
+        toAbortError(error, options?.signal) ?? overflowError(error);
       if (terminal) return { ok: false, error: terminal };
       throw error;
     }

@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { type Message, overflowError } from '@mcp-abap-adt/llm-agent';
+import {
+  type Message,
+  overflowError,
+  toAbortError,
+} from '@mcp-abap-adt/llm-agent';
 import {
   type CallerIdentity,
   callerIdentityKey,
@@ -135,7 +139,7 @@ export class PendingToolResultsRegistry {
       typeof input === 'string' ? [{ role: 'user', content: input }] : input;
     const index = findPendingAssistant(messages, entry.externalCalls);
     const localResults = await entry.promise.catch((error) => {
-      const terminal = overflowError(error);
+      const terminal = toAbortError(error) ?? overflowError(error);
       if (!terminal) return [];
       if (this.sessions.get(key) === entry) this.sessions.delete(key);
       throw terminal;
@@ -292,7 +296,7 @@ export class PendingToolResultsRegistry {
     }
     this.sessions.delete(key);
     const results = await entry.promise.catch((error) => {
-      const terminal = overflowError(error);
+      const terminal = toAbortError(error) ?? overflowError(error);
       if (terminal) throw terminal;
       return [];
     });

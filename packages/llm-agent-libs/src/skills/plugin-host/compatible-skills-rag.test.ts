@@ -225,5 +225,5 @@ test('skills recall handles a cancellation wrapping overflow', async () => {
     }),
     ...MANIFEST,
   });
-  assert.deepEqual(await rag.query('q', { k: 1 }), []);
+  await assert.rejects(() => rag.query('q', { k: 1 }), { code: 'ABORTED' });
 });

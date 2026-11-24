@@ -11,6 +11,7 @@ import {
   findAbort,
   overflowError,
   SkillsIncompatibleError,
+  toAbortError,
 } from '@mcp-abap-adt/llm-agent'; // value (class)
 
 export interface CompatibleSkillsRagDeps {
@@ -94,6 +95,7 @@ export function makeCompatibleSkillsRag(
       await ensureDimension(options);
       const snap = await deps.backend.activeSnapshot(); // ONCE — pins the generation (lease)
       if (!snap) return [];
+      let deadline: AbortSignal | undefined;
       try {
         if (!compatible(snap)) return []; // no embed on incompatible
         const { vector } = await deps.embedder.embedQuery(text, {
@@ -102,12 +104,12 @@ export function makeCompatibleSkillsRag(
         }); // PAID step, last
         // Bound the vector read with a DEADLINE so it cannot outlive a time-grace backend's
         // retention window (P1.4). For the exact-lease backend recallTimeoutMs is omitted.
-        const sigs = [
-          options?.signal,
-          deps.recallTimeoutMs
-            ? AbortSignal.timeout(deps.recallTimeoutMs)
-            : undefined,
-        ].filter(Boolean) as AbortSignal[];
+        deadline = deps.recallTimeoutMs
+          ? AbortSignal.timeout(deps.recallTimeoutMs)
+          : undefined;
+        const sigs = [options?.signal, deadline].filter(
+          (signal) => signal !== undefined,
+        );
         const signal = sigs.length ? AbortSignal.any(sigs) : undefined;
         const hits = await deps.backend.queryRevision(
           snap.revision,
@@ -118,10 +120,18 @@ export function makeCompatibleSkillsRag(
         const threshold = opts.threshold ?? 0.3;
         return hits.filter((h) => h.score >= threshold);
       } catch (e) {
+        if (
+          !options?.signal?.aborted &&
+          deadline?.aborted &&
+          findAbort(e, deadline)
+        )
+          return []; // Local retention deadline.
+        const aborted = toAbortError(e, options?.signal);
+        if (aborted) throw aborted;
         const overflow = overflowError(e);
         if (overflow) throw overflow;
         const n = (e as Error)?.name;
-        if (findAbort(e, options?.signal) || n === 'TimeoutError') return []; // deadline hit → empty, no crash
+        if (n === 'TimeoutError') return []; // deadline hit → empty, no crash
         throw e;
       } finally {
         deps.backend.release?.(snap.revision); // EXACT retention: release the lease

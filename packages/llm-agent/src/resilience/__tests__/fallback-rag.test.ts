@@ -1,11 +1,45 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
+import {
+  MODEL_CONTEXT_EXCEEDED,
+  RagError,
+  TextOnlyEmbedding,
+} from '@mcp-abap-adt/llm-agent';
 import { makeRag } from '../../testing/index.js';
 import { CircuitBreaker } from '../circuit-breaker.js';
 import { FallbackRag } from '../fallback-rag.js';
 
 describe('FallbackRag', () => {
+  it('propagates a wrapped abort before looking in the fallback store', async () => {
+    const abort = new Error('Cancelled', {
+      cause: new RagError('Input too long', MODEL_CONTEXT_EXCEEDED),
+    });
+    abort.name = 'AbortError';
+    const error = new RagError('Primary read failed', 'QUERY_ERROR', {
+      cause: abort,
+    });
+    const rag = new FallbackRag(
+      {
+        ...makeRag(),
+        async getById() {
+          return { ok: false, error };
+        },
+      },
+      {
+        ...makeRag(),
+        async getById() {
+          assert.fail('unexpected fallback');
+        },
+      },
+      new CircuitBreaker(),
+    );
+
+    const result = await rag.getById('record');
+    assert.ok(!result.ok);
+    assert.equal(result.error.code, 'ABORTED');
+    assert.equal(result.error.cause, error);
+  });
+
   it('writer() upserts to both primary and fallback', async () => {
     const primary = makeRag();
     const fallback = makeRag();

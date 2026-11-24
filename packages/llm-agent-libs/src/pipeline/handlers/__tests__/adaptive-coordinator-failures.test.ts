@@ -475,3 +475,50 @@ for (const mode of [
     assert.equal(error.usageCalls, undefined);
   });
 }
+
+for (const role of ['plan', 'worker'] as const) {
+  test(`adaptive ${role} meters a wrapped provider failure once`, async (t) => {
+    const logger = new DefaultRequestLogger();
+    const provider = Object.assign(
+      new RagError('Embedding input too long', EMBEDDING_CONTEXT_EXCEEDED),
+      {
+        usage,
+        usageCalls: [
+          {
+            ...usage,
+            callId: 'embedding-call',
+            component: 'embedding' as const,
+            model: 'embed-test',
+            durationMs: 1,
+          },
+        ],
+      },
+    );
+    const wrapper = new Error('Component wrapper', { cause: provider });
+    const handle = await buildAdaptiveAgent(
+      async () => {
+        if (role === 'plan') throw wrapper;
+        return { plan: { steps: [adaptiveSteps.worker], createdAt: 0 } };
+      },
+      async () => {
+        throw wrapper;
+      },
+      logger,
+    );
+    t.after(() => handle.close());
+
+    const traceId = `wrapped-${role}`;
+    const result = await handle.agent.process(
+      'Work',
+      testCallOptions({ trace: { traceId } }),
+    );
+    assert.ok(!result.ok);
+    assert.equal(result.error.code, EMBEDDING_CONTEXT_EXCEEDED);
+    assert.deepEqual(result.error.usage, usage);
+    assert.deepEqual(result.error.usageCalls, provider.usageCalls);
+    assert.deepEqual(logger.getSummary(traceId).totals, {
+      ...usage,
+      requests: 1,
+    });
+  });
+}

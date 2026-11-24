@@ -14,7 +14,11 @@ import type {
   SkillRecord,
   SkillsManifest,
 } from '@mcp-abap-adt/llm-agent';
-import { CatalogCasError, overflowError } from '@mcp-abap-adt/llm-agent'; // value (class), not a type
+import {
+  CatalogCasError,
+  overflowError,
+  toAbortError,
+} from '@mcp-abap-adt/llm-agent'; // value (class), not a type
 import { makeCompatibleSkillsRag } from './compatible-skills-rag.js';
 
 /** RECALL-ONLY construction: serves an already-materialised catalog through a READ-ONLY
@@ -246,7 +250,8 @@ function makeIngestHost(deps: IngestHostDeps): ISkillPluginHost {
       const { id } = deps.sources[i];
       const r = results[i];
       if (r.status === 'rejected') {
-        const overflow = overflowError(r.reason);
+        const overflow =
+          toAbortError(r.reason, options?.signal) ?? overflowError(r.reason);
         if (overflow) throw overflow;
         failedSourceIds.push(id);
         continue;
@@ -342,7 +347,8 @@ function makeIngestHost(deps: IngestHostDeps): ISkillPluginHost {
             manifest,
           });
         } catch (buildErr) {
-          const overflow = overflowError(buildErr);
+          const overflow =
+            toAbortError(buildErr, options?.signal) ?? overflowError(buildErr);
           if (overflow) throw overflow;
           const priorGen = prior.entries.find(
             (e) => e.collection.group === group && !e.tombstone,
@@ -447,7 +453,7 @@ function makeIngestHost(deps: IngestHostDeps): ISkillPluginHost {
         try {
           return await attempt(manifest, options);
         } catch (e) {
-          const overflow = overflowError(e);
+          const overflow = toAbortError(e, options?.signal) ?? overflowError(e);
           if (overflow) throw overflow;
           if (e instanceof CatalogCasError) continue; // built gens already discarded by finally
           throw e;

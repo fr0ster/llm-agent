@@ -81,7 +81,7 @@ describe('RerankedRetrieval', () => {
     const reranker: IReranker = {
       rerank: async () => ({
         ok: false,
-        error: new RagError('down', 'ABORTED'),
+        error: new RagError('down', 'RERANK_ERROR'),
       }),
     };
     const r = await new RerankedRetrieval(reranker, {
@@ -100,7 +100,7 @@ describe('RerankedRetrieval', () => {
         {
           store: 'tools',
           strategy: 'rerank',
-          code: 'ABORTED',
+          code: 'RERANK_ERROR',
           message: 'down',
         },
       ],
@@ -142,6 +142,28 @@ describe('RerankedRetrieval', () => {
       const r = await new RerankedRetrieval(reranker).retrieve(store, q, 1);
       assert.ok(!r.ok);
       assert.equal(terminalRunError(r.error), terminal);
+    });
+  }
+
+  for (const thrown of [false, true]) {
+    it(`propagates a ${thrown ? 'thrown' : 'returned'} reranker abort before fallback`, async () => {
+      const { store } = fakeStore([hit('a', 0.9)]);
+      const abort = new Error('Cancelled', {
+        cause: new LlmError('Prompt too long', MODEL_CONTEXT_EXCEEDED),
+      });
+      abort.name = 'AbortError';
+      const error = new RagError('Reranker wrapper', 'RERANK_ERROR', {
+        cause: abort,
+      });
+      const result = await new RerankedRetrieval({
+        async rerank() {
+          if (thrown) throw error;
+          return { ok: false, error };
+        },
+      }).retrieve(store, q, 1);
+      assert.ok(!result.ok);
+      assert.equal(result.error.code, 'ABORTED');
+      assert.equal(result.error.cause, error);
     });
   }
 
