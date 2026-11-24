@@ -89,6 +89,9 @@ function orchestrationOverflow<T>(error: T): RagError | undefined {
         detail && typeof detail === 'object' && 'code' in detail
           ? detail.code
           : undefined,
+        detail && typeof detail === 'object' && 'type' in detail
+          ? detail.type
+          : undefined,
       ].some((value) => isEmbeddingOverflow(status, value))
     ) {
       return Object.assign(

@@ -98,16 +98,27 @@ test('embedBatch(): builds a fresh destination on every call', async () => {
   assert.deepEqual(seenAuth, ['Bearer b1', 'Bearer b2']);
 });
 
-for (const [status, message, overflow] of [
+for (const [status, message, overflow, providerCode, providerType] of [
   [400, 'context length must be a positive integer', false],
   [401, 'Unauthorized', false],
   [429, 'Rate limited', false],
   [500, 'Service failure', false],
   [400, 'Input exceeds the maximum context length', true],
+  [
+    400,
+    'Requested 300500 tokens, max 300000 tokens per request',
+    true,
+    'max_tokens_per_request',
+    'max_tokens_per_request',
+  ],
+  [400, 'Request rejected', true, undefined, 'max_tokens_per_request'],
 ] as const) {
   test(`orchestration preserves SDK error details for HTTP ${status}: ${message}`, async (t) => {
     const cause = Object.assign(new Error('Upstream failure'), {
-      response: { status, data: { error: { message } } },
+      response: {
+        status,
+        data: { error: { message, type: providerType, code: providerCode } },
+      },
     });
     const rejection = Object.assign(new Error('Request failed', { cause }), {
       code: 'SDK_ERROR',
@@ -121,8 +132,8 @@ for (const [status, message, overflow] of [
       apiBaseUrl: 'https://api.example.com',
     });
     for (const run of [
-      () => embedder.embed('hello'),
       () => embedder.embedBatch(['hello', 'world']),
+      () => embedder.embed('hello'),
     ]) {
       await assert.rejects(run, (error) => {
         if (overflow) {

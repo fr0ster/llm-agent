@@ -68,10 +68,17 @@ export function isEmbeddingOverflow<T>(
     /\bmaximum context length is (\d+) tokens?\b[\s\S]*?\byou requested (\d+) tokens?\b/i.exec(
       detail,
     );
+  const requestCounts =
+    /\brequested (\d+) tokens?, max (\d+) tokens? per request\b/i.exec(detail);
   return (
     /\b(?:context_length_exceeded|input (?:text )?(?:is )?too (?:long|large)|(?:input (?:length )?|(?:input )?token count )exceeds? (?:the )?(?:maximum )?(?:context (?:length|window)|token limit)|too many tokens)\b/i.test(
       detail,
     ) ||
+    /^max_tokens_per_request$|"(?:type|code)"\s*:\s*"max_tokens_per_request"/i.test(
+      detail,
+    ) ||
+    (requestCounts !== null &&
+      Number(requestCounts[1]) > Number(requestCounts[2])) ||
     (counts !== null && Number(counts[2]) > Number(counts[1]))
   );
 }

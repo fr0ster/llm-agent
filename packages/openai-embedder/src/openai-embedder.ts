@@ -31,10 +31,15 @@ function embeddingErrorCode(status: number, detail: string): string {
     /\bmaximum context length is (\d+) tokens?\b[\s\S]*?\byou requested (\d+) tokens?\b/i.exec(
       detail,
     );
+  const requestCounts =
+    /\brequested (\d+) tokens?, max (\d+) tokens? per request\b/i.exec(detail);
   const overflow =
     /\b(?:context_length_exceeded|input (?:text )?(?:is )?too (?:long|large)|input (?:length )?exceeds (?:the )?(?:maximum )?(?:context (?:length|window)|token limit)|too many tokens)\b/i.test(
       detail,
     ) ||
+    /"(?:type|code)"\s*:\s*"max_tokens_per_request"/i.test(detail) ||
+    (requestCounts !== null &&
+      Number(requestCounts[1]) > Number(requestCounts[2])) ||
     (counts && Number(counts[2]) > Number(counts[1]));
   return overflow ? EMBEDDING_CONTEXT_EXCEEDED : 'EMBED_ERROR';
 }

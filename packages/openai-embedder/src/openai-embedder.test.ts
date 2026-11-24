@@ -45,7 +45,7 @@ describe('OpenAiEmbedder — constructor', () => {
   });
 });
 
-for (const [status, message, code, providerCode] of [
+for (const [status, message, code, providerCode, providerType] of [
   [400, 'maximum context length must be a positive integer', 'EMBED_ERROR'],
   [
     400,
@@ -66,9 +66,34 @@ for (const [status, message, code, providerCode] of [
     EMBEDDING_CONTEXT_EXCEEDED,
     'context_length_exceeded',
   ],
+  [
+    400,
+    'Requested 300500 tokens, max 300000 tokens per request',
+    EMBEDDING_CONTEXT_EXCEEDED,
+    'max_tokens_per_request',
+    'max_tokens_per_request',
+  ],
+  [
+    400,
+    'Request rejected',
+    EMBEDDING_CONTEXT_EXCEEDED,
+    'max_tokens_per_request',
+  ],
+  [
+    400,
+    'Requested 300001 tokens, max 300000 tokens per request',
+    EMBEDDING_CONTEXT_EXCEEDED,
+  ],
+  [
+    400,
+    'Requested 300000 tokens, max 300000 tokens per request',
+    'EMBED_ERROR',
+  ],
 ] as const) {
   test(`OpenAI preserves HTTP ${status} details for ${message}`, async (t) => {
-    const body = JSON.stringify({ error: { message, code: providerCode } });
+    const body = JSON.stringify({
+      error: { message, type: providerType, code: providerCode },
+    });
     t.mock.method(
       globalThis,
       'fetch',
@@ -79,8 +104,8 @@ for (const [status, message, code, providerCode] of [
       model: 'text-embedding-3-small',
     });
     for (const [action, run] of [
-      ['embed', () => embedder.embed('hello')],
       ['batch embed', () => embedder.embedBatch(['hello', 'world'])],
+      ['embed', () => embedder.embed('hello')],
     ] as const) {
       await assert.rejects(run, (error) => {
         assert.ok(error instanceof Error);
