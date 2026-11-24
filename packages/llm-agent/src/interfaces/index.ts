@@ -397,6 +397,14 @@ export {
   type ToolKeyContext,
   toolNameFromRecord,
 } from './tool-record-key.js';
+export {
+  type IToolRetriever,
+  type JsonSchema,
+  TOOL_RETRIEVAL_INVALID,
+  type ToolCandidate,
+  type ToolRetrievalRequest,
+  type ToolRetrievalResult,
+} from './tool-retriever.js';
 export type { IToolSelectionStrategy } from './tool-selection-strategy.js';
 export type { ISpan, ITracer, SpanOptions, SpanStatus } from './tracer.js';
 export type {

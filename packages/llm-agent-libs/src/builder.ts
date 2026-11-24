@@ -48,6 +48,7 @@ import type {
   IToolCache,
   IToolNamespace,
   IToolRecordKey,
+  IToolRetriever,
   IToolSelectionStrategy,
   LlmTool,
   McpConnectionConfig,
@@ -115,7 +116,7 @@ import type {
   McpClientDescriptor,
   McpConnectionResult,
 } from './interfaces/mcp-connection-strategy.js';
-import type { IPipeline } from './interfaces/pipeline.js';
+import type { IPipeline, ToolCandidateFilter } from './interfaces/pipeline.js';
 import { DefaultRequestLogger } from './logger/default-request-logger.js';
 import { pipelineRequestLogger } from './logger/pipeline-request-logger.js';
 import { ToolCatalogStatusHolder } from './mcp/tool-catalog-status.js';
@@ -246,6 +247,8 @@ export class SmartAgentBuilder {
   private _modelProvider?: IModelProvider;
   private _embedder?: IQueryEmbedder;
   private _toolSelectionStrategy?: IToolSelectionStrategy;
+  private _toolRetriever?: IToolRetriever;
+  private _toolCandidateFilter?: ToolCandidateFilter;
   private _connectionStrategy?: IMcpConnectionStrategy;
   private _mcpRequestHeadersStrategy?: IMcpRequestHeadersStrategy;
   private _mcpFailureClassifier?: IMcpFailureClassifier;
@@ -583,6 +586,18 @@ export class SmartAgentBuilder {
   /** Set the strategy that filters scored RAG results for tool exposure. */
   withToolSelectionStrategy(strategy: IToolSelectionStrategy): this {
     this._toolSelectionStrategy = strategy;
+    return this;
+  }
+
+  /** Replace the default RAG-based MCP tool selection. */
+  withToolRetriever(retriever: IToolRetriever): this {
+    this._toolRetriever = retriever;
+    return this;
+  }
+
+  /** Restrict the MCP catalogue before tool selection and availability checks. */
+  withToolCandidateFilter(filter: ToolCandidateFilter): this {
+    this._toolCandidateFilter = filter;
     return this;
   }
 
@@ -1574,6 +1589,8 @@ export class SmartAgentBuilder {
         ragProviderRegistry,
         embedder: this._embedder,
         toolSelectionStrategy: this._toolSelectionStrategy,
+        toolRetriever: this._toolRetriever,
+        toolCandidateFilter: this._toolCandidateFilter,
         reranker: this._reranker,
         queryExpander: this._queryExpander,
         toolPolicy: this._toolPolicy,
