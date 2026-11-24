@@ -269,6 +269,7 @@ export async function runAdaptivePlan(
                   );
               }
             : undefined;
+        let reportedUsage: LlmUsage | undefined;
         try {
           const worker = input.workers.get(step.worker);
           if (!worker) throw new Error(`unknown worker ${step.worker}`);
@@ -291,11 +292,12 @@ export async function runAdaptivePlan(
             externalResults: input.externalResults,
             onPartial,
           });
-          collect(worked.usage);
-          if (worked.usage)
+          reportedUsage = worked.usage;
+          collect(reportedUsage);
+          if (reportedUsage)
             workerUsage.push({
               worker: step.worker,
-              usage: worked.usage,
+              usage: reportedUsage,
               model:
                 worked.model ??
                 (typeof worked.metadata?.model === 'string'
@@ -342,7 +344,7 @@ export async function runAdaptivePlan(
           }
         } catch (error) {
           const failed = error as { usage?: LlmUsage; model?: string } | null;
-          if (failed?.usage) {
+          if (!reportedUsage && failed?.usage) {
             collect(failed.usage);
             workerUsage.push({
               worker: step.worker,

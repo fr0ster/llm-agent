@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   type AdaptiveStep,
+  EMBEDDING_CONTEXT_EXCEEDED,
   type ILlm,
   LlmError,
   MODEL_CONTEXT_EXCEEDED,
+  RagError,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgentBuilder } from '../../../builder.js';
 import { unwrapBuilderResult } from '../../../builder-types.js';
@@ -142,6 +144,50 @@ test('adaptive planning exposes overflow when the planner also aborts', async ()
       ...testCallOptions(),
       signal: abort.signal,
     });
+    assert.ok(!result.ok);
+    assert.equal(result.error, overflow);
+  } finally {
+    await handle.close();
+  }
+});
+
+test('adaptive planning exposes embedding overflow when a custom planner also aborts', async () => {
+  const abort = new AbortController();
+  const overflow = new RagError(
+    'Embedding input exceeds context length',
+    EMBEDDING_CONTEXT_EXCEEDED,
+  );
+  const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+    .withRagAccess(testRequestAccess)
+    .withMainLlm({
+      chat: async () => assert.fail('unexpected chat'),
+      streamChat: () => assert.fail('unexpected stream'),
+    })
+    .withClassification(false)
+    .withStepperCoordinator(
+      new AdaptiveCoordinatorHandler({
+        controller: {
+          name: 'custom',
+          async plan() {
+            abort.abort();
+            throw new Error('Planner context lookup failed', {
+              cause: overflow,
+            });
+          },
+          check: async () => assert.fail('unexpected check'),
+          revise: async () => assert.fail('unexpected revision'),
+          report: async () => assert.fail('unexpected report'),
+        },
+        workers: new Map(),
+      }),
+    )
+    .build()
+    .then(unwrapBuilderResult);
+  try {
+    const result = await handle.agent.process(
+      'Work',
+      testCallOptions({ signal: abort.signal }),
+    );
     assert.ok(!result.ok);
     assert.equal(result.error, overflow);
   } finally {

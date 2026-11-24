@@ -162,6 +162,7 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private readonly collectionName: string;
   private readonly fragmentSizeChars?: number;
   private readonly embedder: IRetrievalEmbedder;
+  private readonly preserveQueryAbort: boolean;
   private readonly autoCreateSchema: boolean;
   private readonly clientPromise: Promise<PgClient>;
   private schemaReady = false;
@@ -184,6 +185,7 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     this.dimension = config.dimension ?? 1536;
     this.fragmentSizeChars = config.fragmentSizeChars;
     this.embedder = config.embedder;
+    this.preserveQueryAbort = config.fallbackOnQueryEmbeddingError === false;
     this.listStore = JSON.stringify([
       'pg-vector-rag',
       config.layout ?? 'per-collection',
@@ -371,17 +373,11 @@ export class PgVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       if (overflow) return { ok: false, error: overflow };
       if (options?.signal?.aborted)
         return { ok: false, error: new RagError('Aborted', 'ABORTED') };
-      if (err instanceof RagError) {
-        // Keep the public query code when a dependency aborts independently.
-        const error =
-          err.code === 'ABORTED'
-            ? new RagError(String(err), 'QUERY_ERROR', {
-                cause: err,
-                status: err.status,
-              })
-            : err;
-        return { ok: false, error };
-      }
+      if (
+        err instanceof RagError &&
+        (err.code !== 'ABORTED' || this.preserveQueryAbort)
+      )
+        return { ok: false, error: err };
       return { ok: false, error: this.failure(err, 'QUERY_ERROR') };
     }
   }

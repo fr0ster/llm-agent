@@ -181,6 +181,37 @@ for (const returnsFailure of [false, true]) {
   });
 }
 
+for (const reportedIn of ['result and error', 'result', 'error', 'throw']) {
+  test(`failed work counts its three tokens once (usage in ${reportedIn})`, async () => {
+    const error = new RagError('Worker failed', 'QUERY_ERROR');
+    const failure =
+      reportedIn === 'result'
+        ? error
+        : Object.assign(error, { usage: { ...usage } });
+    const { input, calls, controller } = setup(
+      [work, answer],
+      [
+        reportedIn === 'throw'
+          ? failure
+          : {
+              output: 'Partial output',
+              error: failure,
+              usage: reportedIn === 'error' ? undefined : usage,
+            },
+      ],
+    );
+    controller.report = async () => assert.fail('unexpected stop report');
+
+    const result = await runAdaptivePlan(input);
+    assert.equal(calls.length, 1);
+    assert.equal(result.error?.cause, failure);
+    assert.deepEqual(result.usage, [usage]);
+    assert.deepEqual(result.workerUsage, [
+      { worker: work.worker, usage, model: undefined },
+    ]);
+  });
+}
+
 for (const mode of ['none', 'last-turn', 'all'] as const) {
   for (const withTools of [false, true]) {
     test(`direct LLM worker receives selected history and current task (${mode}, tools: ${withTools})`, async () => {

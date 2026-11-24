@@ -72,6 +72,25 @@ describe('HanaVectorRag query embedding fallback policy', () => {
   for (const fallbackOnQueryEmbeddingError of [undefined, true, false]) {
     const policy = String(fallbackOnQueryEmbeddingError);
 
+    it(`preserves the released independent abort behavior (fallback=${policy})`, async () => {
+      const failure = new RagError('Embedder aborted', 'ABORTED');
+      const { embedder, calls } = makeEmbedder(failure);
+      const rag = makeRag(embedder, fallbackOnQueryEmbeddingError);
+      const result = await rag.query(new QueryEmbedding('query', embedder), 1, {
+        signal: new AbortController().signal,
+      });
+
+      assert.ok(!result.ok);
+      if (fallbackOnQueryEmbeddingError === false) {
+        assert.equal(result.error, failure);
+        assert.equal(result.error.code, 'ABORTED');
+      } else {
+        assert.equal(result.error.code, 'QUERY_ERROR');
+        assert.equal(result.error.message, String(failure));
+      }
+      assert.deepEqual(calls, ['query']);
+    });
+
     it(`preserves a supplied vector (fallback=${policy})`, async () => {
       const { embedder, calls } = makeEmbedder();
       const rag = makeRag(embedder, fallbackOnQueryEmbeddingError);

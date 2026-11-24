@@ -111,6 +111,28 @@ test('openai: decodes base64 embedding', async () => {
   assert.deepEqual(Array.from(result.vector), [1, 2, 3]);
 });
 
+for (const message of [
+  'context length must be a positive integer',
+  'This model does not support the context window parameter',
+]) {
+  test(`foundation models preserve the parameter error: ${message}`, async () => {
+    installFetch((url) => {
+      if (url.includes('/v2/lm/deployments'))
+        return { body: deploymentList('text-embedding-3-small') };
+      return { body: { error: { message } }, status: 400 };
+    });
+    const embedder = makeOpenAiEmbedder();
+    await assert.rejects(embedder.embed('hello'), {
+      code: 'EMBED_ERROR',
+      status: 400,
+    });
+    await assert.rejects(embedder.embedBatch(['hello', 'world']), {
+      code: 'EMBED_ERROR',
+      status: 400,
+    });
+  });
+}
+
 test('openai: embedBatch sorts by index and returns vectors in input order', async () => {
   installFetch((url) => {
     if (url.includes('/v2/lm/deployments'))

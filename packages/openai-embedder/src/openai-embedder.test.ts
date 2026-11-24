@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { describe, it, test } from 'node:test';
 import { staticApiKey } from '@mcp-abap-adt/llm-agent';
 import { OpenAiEmbedder } from './openai-embedder.js';
 
@@ -40,3 +40,26 @@ describe('OpenAiEmbedder — constructor', () => {
     assert.equal(e.model, 'text-embedding-ada-002');
   });
 });
+
+for (const message of [
+  'context length must be a positive integer',
+  'This model does not support the context window parameter',
+]) {
+  test(`OpenAI preserves the parameter error: ${message}`, async (t) => {
+    t.mock.method(globalThis, 'fetch', async () =>
+      Response.json({ error: { message } }, { status: 400 }),
+    );
+    const embedder = new OpenAiEmbedder({
+      credential: staticApiKey('test'),
+      model: 'text-embedding-3-small',
+    });
+    await assert.rejects(embedder.embed('hello'), {
+      code: 'EMBED_ERROR',
+      status: 400,
+    });
+    await assert.rejects(embedder.embedBatch(['hello', 'world']), {
+      code: 'EMBED_ERROR',
+      status: 400,
+    });
+  });
+}

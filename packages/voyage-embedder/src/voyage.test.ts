@@ -256,6 +256,26 @@ test('reports both aggregate and per-input token violations without retrying', a
   ]);
 });
 
+for (const message of [
+  'context length must be a positive integer',
+  'This model does not support the context window parameter',
+]) {
+  test(`Voyage preserves the parameter error: ${message}`, async (t) => {
+    t.mock.method(globalThis, 'fetch', async () =>
+      Response.json({ detail: message }, { status: 400 }),
+    );
+    const embedder = new VoyageEmbedder(embeddingConfig);
+    await assert.rejects(embedder.embed('hello'), {
+      code: 'EMBED_ERROR',
+      status: 400,
+    });
+    await assert.rejects(embedder.embedBatch(['hello', 'world']), {
+      code: 'EMBED_ERROR',
+      status: 400,
+    });
+  });
+}
+
 test('embedding returns the first 429 with Retry-After metadata', async (t) => {
   const records: UsageInput[] = [];
   let calls = 0;

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
+import { OrchestrationEmbeddingClient } from '@sap-ai-sdk/orchestration';
 import { OrchestrationScenarioEmbedder } from './orchestration-embedder.js';
 
 /**
@@ -20,6 +21,28 @@ import { OrchestrationScenarioEmbedder } from './orchestration-embedder.js';
 const fakeEmbedResponse = () => ({
   getEmbeddings: () => [{ embedding: [0], index: 0 }],
 });
+
+for (const message of [
+  'context length must be a positive integer',
+  'This model does not support the context window parameter',
+]) {
+  test(`orchestration preserves the parameter error: ${message}`, async (t) => {
+    const rejection = Object.assign(new Error('Request failed'), {
+      response: { status: 400, data: { error: { message } } },
+    });
+    t.mock.method(OrchestrationEmbeddingClient.prototype, 'embed', async () => {
+      throw rejection;
+    });
+    const embedder = new OrchestrationScenarioEmbedder({
+      model: 'text-embedding-3-small',
+      credential: { kind: 'bearer', token: async () => 'test' },
+      apiBaseUrl: 'https://api.example.com',
+    });
+    const expected = { code: 'LLM_HTTP_ERROR', status: 400, cause: rejection };
+    await assert.rejects(embedder.embed('hello'), expected);
+    await assert.rejects(embedder.embedBatch(['hello', 'world']), expected);
+  });
+}
 
 test('embed(): builds a fresh destination (credential.token()) on every call, not cached at construction', async () => {
   let n = 0;

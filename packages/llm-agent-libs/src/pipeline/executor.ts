@@ -42,6 +42,28 @@ import type { PipelineContext } from './context.js';
 import type { StageHandlerRegistry } from './handlers/index.js';
 import type { StageDefinition } from './types.js';
 
+function abortError(
+  signal: AbortSignal,
+  failure?: SmartAgentError,
+): SmartAgentError {
+  if (failure?.code === 'ABORTED') return failure;
+  const reason = toRunError(signal.reason, 'ABORTED');
+  // A coded abort reason is supplied by the caller and cannot classify the stage failure.
+  return reason.code === 'ABORTED'
+    ? reason
+    : new OrchestratorError(reason.message, 'ABORTED');
+}
+
+function stageOverflow<T>(
+  error: T,
+  signal: AbortSignal | undefined,
+): SmartAgentError | undefined {
+  if (signal?.aborted && error === signal.reason) return undefined;
+  const overflow =
+    contextExceededError(error) ?? embeddingContextExceededError(error);
+  return signal?.aborted && overflow === signal.reason ? undefined : overflow;
+}
+
 export class PipelineExecutor {
   constructor(
     private readonly handlers: StageHandlerRegistry,
@@ -65,7 +87,7 @@ export class PipelineExecutor {
       if (ctx.error) return false;
       const signal = ctx.options?.signal;
       if (signal?.aborted) {
-        ctx.error = toRunError(signal.reason, 'ABORTED');
+        ctx.error = abortError(signal);
         return false;
       }
 
@@ -105,15 +127,15 @@ export class PipelineExecutor {
         span.end();
         const failure =
           terminalRunError(err) ?? (err instanceof McpError ? err : undefined);
-        ctx.error ??= failure ?? toRunError(err, 'PIPELINE_STAGE_FAILED');
-        if (failure) {
-          if (
-            contextExceededError(failure) ||
-            embeddingContextExceededError(failure)
-          )
-            ctx.error = failure;
-          ctx.yield({ ok: false, error: failure });
-        }
+        const overflow =
+          stageOverflow(err, signal) ?? stageOverflow(ctx.error, signal);
+        const priorityError =
+          overflow ??
+          (signal?.aborted ? abortError(signal, ctx.error) : undefined);
+        if (priorityError) ctx.error = priorityError;
+        else ctx.error ??= failure ?? toRunError(err, 'PIPELINE_STAGE_FAILED');
+        const reported = priorityError ?? failure;
+        if (reported) ctx.yield({ ok: false, error: reported });
         ctx.options?.sessionLogger?.logStep(`stage_error_${stage.id}`, {
           error: String(err),
         });
@@ -125,12 +147,15 @@ export class PipelineExecutor {
         duration: Date.now() - stageStart,
       });
       if (!ok) {
-        ctx.error ??= signal?.aborted
-          ? toRunError(signal.reason, 'ABORTED')
-          : new OrchestratorError(
-              `Pipeline stage "${stage.id}" failed.`,
-              'PIPELINE_STAGE_FAILED',
-            );
+        if (signal?.aborted) {
+          ctx.error =
+            stageOverflow(ctx.error, signal) ?? abortError(signal, ctx.error);
+        } else {
+          ctx.error ??= new OrchestratorError(
+            `Pipeline stage "${stage.id}" failed.`,
+            'PIPELINE_STAGE_FAILED',
+          );
+        }
       }
       span.setStatus(ctx.error ? 'error' : 'ok');
       span.end();

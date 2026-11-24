@@ -10,7 +10,11 @@ import type {
   LlmUsageAttribution,
   RunRecord,
 } from '@mcp-abap-adt/llm-agent';
-import { contextExceededError, toRunError } from '@mcp-abap-adt/llm-agent';
+import {
+  contextExceededError,
+  embeddingContextExceededError,
+  toRunError,
+} from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import {
   DEFAULT_BUDGET,
@@ -111,7 +115,11 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
         );
         plan = planned.plan;
       } catch (error) {
-        if (!contextExceededError(error)) ctx.options?.signal?.throwIfAborted();
+        if (
+          !contextExceededError(error) &&
+          !embeddingContextExceededError(error)
+        )
+          ctx.options?.signal?.throwIfAborted();
         throw toRunError(error, 'COORDINATOR_PLAN_FAILED');
       }
       if (plan.spec) plan.spec.raw = request;

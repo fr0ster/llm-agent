@@ -6,8 +6,13 @@ import {
   toRunError,
 } from './terminal-run-error.js';
 
-const inputSizeRejection =
-  /\bcontext_length_exceeded\b|\b(?:maximum |model(?:'s)? )?context (?:length|window)\b|\binput(?: text)? (?:is )?too (?:long|large)\b|\b(?:too many|maximum (?:allowed )?(?:input )?(?:number of )?) tokens\b|\b(?:total (?:number of )?tokens|token (?:count|limit))[^.\n]{0,100}\b(?:exceed\w*|limit)\b/i;
+const inputSizeRejections = [
+  /\bcontext_length_exceeded\b/i,
+  /\bmaximum context length\b/i,
+  /\binput(?: text)? (?:is )?too (?:long|large)\b|\btoo many tokens\b/i,
+  /\bexceed(?:s|ed|ing)?\b[^.\n]*\b(?:context (?:length|window)|(?:maximum|allowed) (?:input )?(?:number of )?tokens|token limit)\b/i,
+  /\b(?:context (?:length|window)|total (?:number of )?tokens|token (?:count|limit))\b[^.\n]*\bexceed(?:s|ed|ing)?\b/i,
+];
 
 /** Classify provider rejections at the embedding boundary. */
 export function embeddingErrorCode(
@@ -16,7 +21,7 @@ export function embeddingErrorCode(
 ): string {
   return status === 413 ||
     ((status === undefined || status === 400 || status === 422) &&
-      inputSizeRejection.test(detail))
+      inputSizeRejections.some((pattern) => pattern.test(detail)))
     ? EMBEDDING_CONTEXT_EXCEEDED
     : 'EMBED_ERROR';
 }

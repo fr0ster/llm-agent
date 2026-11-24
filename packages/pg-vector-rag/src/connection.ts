@@ -4,9 +4,7 @@ import { parse as parseConnectionString } from 'pg-connection-string';
 import type { RecordCacheOptions } from './record-cache.js';
 
 export interface PgVectorRagConfig extends RecordEmbeddingConfig {
-  /** Retry a failed caller query embedding with the store embedder. Default: true.
-   *  TextOnlyEmbedding is always embedded by the store, regardless of this option. */
-  /** @deprecated Query embedding failures always propagate. */
+  /** @deprecated Set to false to preserve an independent query ABORTED error. Defaults to true, which wraps it as QUERY_ERROR. */
   fallbackOnQueryEmbeddingError?: boolean;
   recordCache?: RecordCacheOptions;
   /** The ADDRESS only. A string carrying credentials is refused below. */
