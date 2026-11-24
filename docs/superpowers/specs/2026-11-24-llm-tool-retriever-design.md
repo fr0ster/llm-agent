@@ -53,7 +53,7 @@ Implementations:
 - `LlmToolRetriever` (llm-agent-libs): one call to a configured `ILlm`.
   - System prompt: select every tool the step may need; prefer including a tool over leaving one out; answer only with names from the list.
   - The candidate catalogue goes first and stays byte-stable between calls (sorted by name), so provider prompt caching applies; the step text goes last.
-  - Structured answer through `typesafe-decision` (`{ tools: string[] }`); names outside the candidate list are a typed error (`TOOL_RETRIEVAL_INVALID`), not silently dropped.
+  - JSON answer validated in `llm-agent-libs` (no dependency on `typesafe-decision`). The answer has the shape `{ tools: string[] }`. Names outside the candidate list return `TOOL_RETRIEVAL_INVALID`.
   - Usage is reported per call and attributed to the role `tool-retriever` with its model.
 
 ## Pipeline
