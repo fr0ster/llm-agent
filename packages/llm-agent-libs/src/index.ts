@@ -118,6 +118,7 @@ export type {
   IPipeline,
   PipelineDeps,
   PipelineResult,
+  ToolCandidateFilter,
 } from './interfaces/pipeline.js';
 export {
   DEBUG_ENV,
@@ -180,6 +181,11 @@ export {
   type StageDefinition,
   type StageType,
 } from './pipeline/index.js';
+export { LlmToolRetriever } from './pipeline/tool-retrieval/llm-tool-retriever.js';
+export {
+  RagToolRetriever,
+  type RagToolRetrieverOptions,
+} from './pipeline/tool-retrieval/rag-tool-retriever.js';
 export {
   DEFAULT_TOOL_SELECTION,
   ScoreThresholdToolSelection,

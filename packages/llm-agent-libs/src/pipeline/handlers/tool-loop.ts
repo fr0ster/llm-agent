@@ -366,12 +366,20 @@ export class ToolLoopHandler implements IStageHandler {
           perClient,
           ctx.toolNamespace ?? defaultToolNamespace,
         );
-        ctx.mcpTools.push(...tools);
-        for (const [name, client] of toolClientMap) {
-          ctx.toolClientMap.set(name, client);
+        const candidateFilter = ctx.toolCandidateFilter;
+        const candidates = candidateFilter
+          ? tools.filter((tool) => candidateFilter(tool, ctx.options))
+          : tools;
+        ctx.mcpTools.push(...candidates);
+        for (const { name } of candidates) {
+          const client = toolClientMap.get(name);
+          if (client) ctx.toolClientMap.set(name, client);
         }
+        const retrievedNames = ctx.retrievedToolNames;
         currentTools = mergeOfferedTools(
-          ctx.mcpTools as LlmTool[],
+          retrievedNames
+            ? candidates.filter(({ name }) => retrievedNames.has(name))
+            : candidates,
           externalTools,
         );
         ctx.options?.sessionLogger?.logStep('tools_refreshed', {
@@ -385,6 +393,7 @@ export class ToolLoopHandler implements IStageHandler {
       // Per-iteration RAG tool re-selection (when enabled)
       if (
         iteration > 0 &&
+        !ctx.toolRetriever &&
         ctx.config.toolReselectPerIteration &&
         ctx.ragStores?.tools
       ) {
@@ -491,8 +500,11 @@ export class ToolLoopHandler implements IStageHandler {
               );
 
               if (newToolNames.size > 0) {
-                const newMcpTools = ctx.mcpTools.filter((t) =>
-                  newToolNames.has(t.name),
+                const candidateFilter = ctx.toolCandidateFilter;
+                const newMcpTools = ctx.mcpTools.filter(
+                  (tool) =>
+                    newToolNames.has(tool.name) &&
+                    (!candidateFilter || candidateFilter(tool, ctx.options)),
                 );
                 currentTools = mergeOfferedTools(
                   newMcpTools as LlmTool[],

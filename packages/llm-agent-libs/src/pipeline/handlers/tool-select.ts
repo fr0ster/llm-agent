@@ -1,43 +1,27 @@
 import {
-  callerResolutionKey,
-  resolveCallerIdentity,
-} from '../../policy/caller-identity.js';
-import { denyRagAccess, ownerBoundQuery } from '../../rag/owner-bound-query.js';
-/**
- * ToolSelectHandler — selects MCP tools based on RAG results.
- *
- * Reads: `ctx.ragResults.facts`, `ctx.mcpTools`, `ctx.externalTools`, `ctx.toolClientMap`
- * Writes: `ctx.selectedTools`, `ctx.activeTools`
- *
- * Uses RAG fact IDs with the `tool:` prefix to identify relevant MCP tools.
- *
- * If RAG retrieval was skipped (e.g. `shouldRetrieve` was false), the handler
- * performs its own facts RAG query to discover tools. This ensures tools are
- * always discoverable regardless of domain context detection.
- *
- * Falls back to all MCP tools in `hard` mode or external-only in `smart` mode.
- */
-
-import type { LlmTool } from '@mcp-abap-adt/llm-agent';
-import {
   buildNamespacedTools,
-  collectWithContextOverflow,
   contextOverflowInSettled,
   defaultToolNamespace,
   mergeOfferedTools,
-  QueryEmbedding,
-  TextOnlyEmbedding,
-  toolNameFromRecord,
+  type Result,
+  type SmartAgentError,
+  type StageDefinition,
+  type ToolRetrievalResult,
 } from '@mcp-abap-adt/llm-agent';
+import {
+  callerResolutionKey,
+  resolveCallerIdentity,
+} from '../../policy/caller-identity.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
-import { DEFAULT_TOOL_SELECTION } from '../tool-selection/index.js';
+import { RagToolRetriever } from '../tool-retrieval/rag-tool-retriever.js';
+import { toolRetrievalError } from '../tool-retrieval/tool-retrieval-error.js';
 
 export class ToolSelectHandler implements IStageHandler {
   async execute(
     ctx: PipelineContext,
-    config: Record<string, unknown>,
+    config: NonNullable<StageDefinition['config']>,
     span: ISpan,
   ): Promise<boolean> {
     const mode = ctx.config.mode || 'smart';
@@ -76,87 +60,67 @@ export class ToolSelectHandler implements IStageHandler {
       }
     }
 
-    // If RAG retrieval was skipped, query all stores for tool discovery.
-    // Tools should always be discoverable regardless of shouldRetrieve flag.
-    let allRagResults = Object.values(ctx.ragResults).flat();
-    if (allRagResults.length === 0 && ctx.mcpTools.length > 0) {
-      const k = (config.k as number) ?? ctx.config.ragQueryK ?? 20;
-      const queryTextSource =
-        typeof config.queryText === 'string'
-          ? config.queryText === 'toolQueryText'
-            ? (ctx.toolQueryText ?? ctx.ragText)
-            : config.queryText
-          : undefined;
-      const queryText =
-        queryTextSource ?? ctx.toolQueryText ?? ctx.ragText ?? ctx.inputText;
-      const storeEntries = Object.entries(ctx.ragStores);
-      const embedding = ctx.embedder
-        ? new QueryEmbedding(queryText, ctx.embedder, ctx.options)
-        : new TextOnlyEmbedding(queryText);
-      const queries = await collectWithContextOverflow(
-        storeEntries.map(async ([name, store]) => ({
-          name,
-          result: await ownerBoundQuery(
-            store,
-            embedding,
-            k,
-            ctx.options ?? {},
-            ctx.ragAccess ?? denyRagAccess,
-          ),
-        })),
-        ({ result }) => (result.ok ? undefined : result.error),
-        { rejectImmediately: true },
-      );
-      if (!queries.ok) {
-        ctx.error = queries.error;
-        return false;
+    const candidateFilter = ctx.toolCandidateFilter;
+    const candidates = candidateFilter
+      ? ctx.mcpTools.filter((tool) => candidateFilter(tool, ctx.options))
+      : ctx.mcpTools;
+    if (candidateFilter) {
+      const candidateNames = new Set(candidates.map(({ name }) => name));
+      for (const name of ctx.toolClientMap.keys()) {
+        if (!candidateNames.has(name)) ctx.toolClientMap.delete(name);
       }
-      for (const { name, result } of queries.value) {
-        if (!result.ok) {
-          ctx.error = result.error;
-          return false;
-        }
-        if (result.ok) {
-          ctx.ragResults[name] = result.value;
-        }
-      }
-      allRagResults = Object.values(ctx.ragResults).flat();
-
-      ctx.options?.sessionLogger?.logStep('tool_select_rag_fallback', {
-        reason: 'RAG retrieval was skipped, querying stores for tool discovery',
-        query: queryText.slice(0, 200),
-        k,
-        resultCount: allRagResults.length,
-        results: allRagResults.map((r) => ({
-          id: r.metadata.id,
-          score: r.score,
-          text: r.text.slice(0, 120),
-        })),
-      });
     }
 
-    // Filter RAG results by the configured relevance strategy (default: top-k).
-    const strategy = ctx.toolSelectionStrategy ?? DEFAULT_TOOL_SELECTION;
-    const relevant = strategy.select(allRagResults);
-
-    // Select tools based on the strategy-filtered RAG results
-    const ragToolNames = new Set(
-      relevant
-        .map((r) => toolNameFromRecord(r.metadata))
-        .filter((n): n is string => n !== undefined),
+    const retriever =
+      ctx.toolRetriever ??
+      new RagToolRetriever({
+        ragStores: ctx.ragStores,
+        ragResults: ctx.ragResults,
+        ragAccess: ctx.ragAccess,
+        embedder: ctx.embedder,
+        toolSelectionStrategy: ctx.toolSelectionStrategy,
+        k: (config.k as number) ?? ctx.config.ragQueryK,
+        hardMode: mode === 'hard',
+      });
+    const configuredText =
+      typeof config.queryText === 'string'
+        ? config.queryText === 'toolQueryText'
+          ? (ctx.toolQueryText ?? ctx.ragText)
+          : config.queryText
+        : undefined;
+    const text =
+      configuredText ??
+      (ctx.toolRetriever
+        ? ctx.inputText
+        : (ctx.toolQueryText ?? ctx.ragText ?? ctx.inputText));
+    const options = ctx.toolRetriever
+      ? { ...ctx.options, requestLogger: ctx.requestLogger }
+      : ctx.options;
+    let result: Result<ToolRetrievalResult, SmartAgentError>;
+    try {
+      result = await retriever.retrieve({ text, candidates }, options);
+    } catch (error) {
+      ctx.error = toolRetrievalError(error, options?.signal);
+      return false;
+    }
+    if (!result.ok) {
+      ctx.error = result.error;
+      return false;
+    }
+    const retrievedNames = new Set(result.value.names);
+    const selectedMcpTools = candidates.filter((tool) =>
+      retrievedNames.has(tool.name),
     );
-
-    const selectedMcpTools =
-      ragToolNames.size > 0
-        ? ctx.mcpTools.filter((t) => ragToolNames.has(t.name))
-        : mode === 'hard'
-          ? ctx.mcpTools
-          : [];
+    if (ctx.toolRetriever) {
+      ctx.retrievedToolNames = new Set(
+        selectedMcpTools.map(({ name }) => name),
+      );
+    }
 
     ctx.selectedTools =
       mode === 'hard'
-        ? (selectedMcpTools as LlmTool[])
-        : mergeOfferedTools(selectedMcpTools as LlmTool[], ctx.externalTools);
+        ? selectedMcpTools
+        : mergeOfferedTools(selectedMcpTools, ctx.externalTools);
 
     // Apply availability filtering
     const identity =
@@ -183,11 +147,14 @@ export class ToolSelectHandler implements IStageHandler {
     // Log tool selection diagnostics
     ctx.options?.sessionLogger?.logStep('tools_selected', {
       totalMcp: ctx.mcpTools.length,
-      ragMatchedTools: [...ragToolNames],
+      ...('ragDiagnostics' in result.value &&
+      typeof result.value.ragDiagnostics === 'object'
+        ? result.value.ragDiagnostics
+        : {}),
       selectedCount: ctx.selectedTools.length,
       selectedNames: ctx.selectedTools.map((t) => t.name),
       activeCount: ctx.activeTools.length,
-      toolSelectionStrategy: strategy.name,
+      retriever: retriever.name,
     });
 
     return true;

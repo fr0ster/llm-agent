@@ -369,7 +369,7 @@ export class DefaultPipeline implements IPipeline {
    */
   private _buildStages(): StageDefinition[] {
     const enriched = this.deps.agentConfig?.enrichedToolSearch === true;
-    const hasToolsRag = Boolean(this.deps.toolsRag);
+    const hasToolsRag = !this.deps.toolRetriever && Boolean(this.deps.toolsRag);
 
     const ragChildren: StageDefinition[] = [];
     // In enriched mode, the tools store is queried separately AFTER
@@ -582,6 +582,8 @@ export class DefaultPipeline implements IPipeline {
       skillManager: this.deps.skillManager,
       embedder: this.deps.embedder,
       toolSelectionStrategy: this.deps.toolSelectionStrategy,
+      toolRetriever: this.deps.toolRetriever,
+      toolCandidateFilter: this.deps.toolCandidateFilter,
       historyMemory: this.deps.historyMemory,
       historySummarizer: this.deps.historySummarizer,
       llmCallStrategy: this.resolvedLlmCallStrategy,

@@ -39,6 +39,7 @@ import type {
   ISubpromptClassifier,
   IToolCache,
   IToolNamespace,
+  IToolRetriever,
   IToolSelectionStrategy,
   LlmStreamChunk,
   LlmTool,
@@ -60,6 +61,7 @@ import type {
   SmartAgentRagStores,
 } from '../agent.js';
 import type { McpClientDescriptor } from '../interfaces/mcp-connection-strategy.js';
+import type { ToolCandidateFilter } from '../interfaces/pipeline.js';
 import type { IMetrics } from '../metrics/types.js';
 import type { CallerResolution } from '../policy/caller-identity.js';
 import type { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
@@ -134,6 +136,9 @@ export interface PipelineContext {
   readonly skillManager: ISkillManager | undefined;
   readonly embedder: IQueryEmbedder | undefined;
   readonly toolSelectionStrategy: IToolSelectionStrategy | undefined;
+  readonly toolRetriever?: IToolRetriever;
+  readonly toolCandidateFilter?: ToolCandidateFilter;
+  retrievedToolNames?: ReadonlySet<string>;
   readonly historyMemory: IHistoryMemory | undefined;
   readonly historySummarizer: IHistorySummarizer | undefined;
   readonly llmCallStrategy: ILlmCallStrategy;

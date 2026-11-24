@@ -34,6 +34,7 @@ import type {
   ISubpromptClassifier,
   IToolCache,
   IToolNamespace,
+  IToolRetriever,
   IToolSelectionStrategy,
   LlmStreamChunk,
   LlmTool,
@@ -41,6 +42,7 @@ import type {
   Message,
   Result,
   TimingEntry,
+  ToolCandidate,
   ToolLoopContextStrategyFactory,
 } from '@mcp-abap-adt/llm-agent';
 import type { OrchestratorError, SmartAgentConfig } from '../agent.js';
@@ -50,6 +52,12 @@ import type { IReranker } from '../reranker/types.js';
 import type { ISessionManager } from '../session/types.js';
 import type { ITracer } from '../tracer/types.js';
 import type { IOutputValidator } from '../validator/types.js';
+
+/** Request-scoped predicate over exposed (namespaced) MCP tool names. */
+export type ToolCandidateFilter = (
+  candidate: ToolCandidate,
+  options?: CallOptions,
+) => boolean;
 
 // ---------------------------------------------------------------------------
 // Pipeline dependencies
@@ -112,6 +120,8 @@ export interface PipelineDeps {
   embedder?: IQueryEmbedder;
   /** Strategy that filters scored RAG results for tool exposure. Default: top-k. */
   toolSelectionStrategy?: IToolSelectionStrategy;
+  toolRetriever?: IToolRetriever;
+  toolCandidateFilter?: ToolCandidateFilter;
   /** Optional persistent history memory across sessions. */
   historyMemory?: IHistoryMemory;
   /** Optional per-turn summarizer for opt-in semantic RAG indexing; does not modify conversation history. */
