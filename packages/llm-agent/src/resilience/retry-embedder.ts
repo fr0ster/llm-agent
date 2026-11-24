@@ -8,7 +8,10 @@
  * batch-capable to isBatchEmbedder.
  */
 
-import { contextExceededError } from '../errors/terminal-run-error.js';
+import {
+  contextExceededError,
+  embeddingContextExceededError,
+} from '../errors/terminal-run-error.js';
 import type {
   IEmbedder,
   IEmbedderBatch,
@@ -203,6 +206,7 @@ export class RetryEmbedder implements IEmbedder {
   }
 
   protected isRetryable(err: unknown): boolean {
+    if (embeddingContextExceededError(err)) return false;
     const seen = new Set<object>();
     let current = err;
     while (current && typeof current === 'object' && !seen.has(current)) {

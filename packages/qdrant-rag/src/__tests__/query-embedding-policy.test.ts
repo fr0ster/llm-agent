@@ -82,7 +82,7 @@ describe('QdrantRag query embedding fallback policy', () => {
       assert.deepEqual(calls, ['query']);
     });
 
-    it(`handles a first rejection when the second call would succeed (fallback=${policy})`, async (context) => {
+    it(`returns the first rejection even when a second call would succeed (fallback=${policy})`, async (context) => {
       const failure = new RagError(
         'First query embedding failed',
         'EMBED_ERROR',
@@ -91,15 +91,10 @@ describe('QdrantRag query embedding fallback policy', () => {
       const rag = makeRag(embedder, fallbackOnQueryEmbeddingError, context);
       const result = await rag.query(new QueryEmbedding('query', embedder), 1);
 
-      if (fallbackOnQueryEmbeddingError === false) {
-        assert.equal(result.ok, false);
-        if (result.ok) assert.fail('Expected the first embedding failure');
-        assert.equal(result.error, failure);
-        assert.deepEqual(calls, ['query']);
-      } else {
-        assert.ok(result.ok);
-        assert.deepEqual(calls, ['query', 'query']);
-      }
+      assert.equal(result.ok, false);
+      if (result.ok) assert.fail('Expected the first embedding failure');
+      assert.equal(result.error, failure);
+      assert.deepEqual(calls, ['query']);
     });
 
     for (const fail of [false, true]) {
@@ -127,8 +122,8 @@ describe('QdrantRag query embedding fallback policy', () => {
 
     assert.equal(result.ok, false);
     if (result.ok) assert.fail('Expected a failed Result');
-    assert.equal(result.error.code, 'QUERY_ERROR');
-    assert.match(result.error.message, /Original query embedding failure/);
+    assert.equal(result.error.code, 'EMBED_ERROR');
+    assert.equal(result.error.cause, failure);
     assert.deepEqual(calls, ['query']);
   });
 });

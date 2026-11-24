@@ -101,14 +101,12 @@ Qdrant may still apply a write that was in flight when the request was canceled.
 Configure `fragmentSizeChars` for embedders that do not declare their capacity
 (default 2,048 Unicode code points).
 
-## Query embedding fallback
+## Query embedding
 
-`QdrantRagConfig.fallbackOnQueryEmbeddingError?: boolean` defaults to `true`:
-if a caller-supplied query embedding rejects, `QdrantRag` tries its own embedder.
-Set `fallbackOnQueryEmbeddingError: false` in `new QdrantRag({ ... })` to return
-the first failure as a failed `Result` without a second embedder call.
-An explicit `TextOnlyEmbedding` is always embedded once by the store, and its
-failure is returned without retrying. Successful caller embeddings are reused.
+A caller-supplied query embedding failure is returned as a failed `Result`.
+The `fallbackOnQueryEmbeddingError` option is deprecated. An explicit
+`TextOnlyEmbedding` uses the store embedder once. Successful caller embeddings
+are reused.
 
 Requires Qdrant 1.17 or later: the collection catalog is written with an insert-only operation.
 

@@ -61,13 +61,13 @@ export function brandResilient(
 }
 
 export interface ComposeResilienceOptions {
-  /** Maximum characters for single-input embed calls outside record writes. Default: 24000; 0 disables. */
+  /** Maximum characters for single-input embed calls outside record writes. Defaults to disabled. */
   maxInputChars?: number;
   /** A cap a human configured. ONLY this may trigger the conflict check. */
   explicitMaxBatchSize?: number;
   /** Provider-derived or default cap; never triggers the conflict check. */
   fallbackMaxBatchSize?: number;
-  /** False disables ordinary retries; throttle decisions remain independent. */
+  /** Ordinary retries are opt-in; throttle decisions remain independent. */
   retry?: Partial<EmbedderRetryOptions> | false;
   throttle?: EmbedderRetryOptions['throttle'];
   logger?: AnyLogger;
@@ -103,12 +103,10 @@ export function composeResilientEmbedder(
 
   const retried = withInputCap(
     withRetry(inner, {
-      ...(options?.retry === false
-        ? { maxAttempts: 0, retryOn: [] }
-        : options?.retry),
+      ...(!options?.retry ? { maxAttempts: 0, retryOn: [] } : options?.retry),
       ...(options?.throttle ? { throttle: options.throttle } : {}),
     }),
-    options?.maxInputChars,
+    options?.maxInputChars ?? 0,
   );
   const batchCapable = isBatchEmbedder(retried);
   const composed = batchCapable

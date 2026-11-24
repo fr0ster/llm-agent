@@ -432,6 +432,7 @@ export type {
 export {
   AssemblerError,
   ClassifierError,
+  EMBEDDING_CONTEXT_EXCEEDED,
   isMcpUnavailable,
   LlmError,
   MCP_UNAVAILABLE_CODES,

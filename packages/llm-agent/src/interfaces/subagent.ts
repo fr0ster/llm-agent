@@ -4,7 +4,12 @@ import type { IDialogueTaskContext } from './dialogue-task-context.js';
 import type { IRequestLogger, LlmCallRecord } from './request-logger.js';
 import type { OnPartial } from './streaming.js';
 import type { ToolTrace, ToolTraceEntry } from './tool-trace.js';
-import type { LlmTool, LlmToolCall, TokenUsage } from './types.js';
+import type {
+  LlmTool,
+  LlmToolCall,
+  SmartAgentError,
+  TokenUsage,
+} from './types.js';
 import type { IUsageRecorder } from './usage.js';
 
 /**
@@ -110,6 +115,8 @@ export interface ISubAgentResult {
    *  (consumer-executed) external tool call and is waiting for its result
    *  (#171). Default/absent = 'complete'. */
   status?: 'complete' | 'awaiting-external';
+  /** Typed failure returned by a worker that reports errors as results. */
+  error?: SmartAgentError;
   /** Cooperative termination with partial output; status remains complete. */
   stopped?: true;
   /** The external tool calls the worker surfaced (unique returned `ext:` IDs).

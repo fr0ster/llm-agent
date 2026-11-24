@@ -83,6 +83,7 @@ it('preserves custom text stores and excludes tools even without selected defini
 
 for (const pipeline of [false, true]) {
   it(`offers unchanged definitions without tools text (pipeline=${pipeline})`, async () => {
+    const toolsRag = makeRag(toolResults);
     const client: IMcpClient = {
       async listTools() {
         return { ok: true, value: structuredClone(tools) };
@@ -95,7 +96,7 @@ for (const pipeline of [false, true]) {
       assembler: new ContextAssembler(),
       mcpClients: [client],
       ragStores: {
-        tools: makeRag(toolResults),
+        tools: toolsRag,
         facts: makeRag(facts),
       },
     });
@@ -123,17 +124,18 @@ for (const pipeline of [false, true]) {
       },
     };
     deps.mainLlm = capturingLlm;
-    const config = { maxIterations: 1 };
+    const config = {};
     if (pipeline) {
       const implementation = new DefaultPipeline();
-      implementation.initialize({ ...deps, agentConfig: config });
+      implementation.initialize({ ...deps, toolsRag });
       deps.pipeline = implementation;
     }
     const result = await new SmartAgent(deps, config).process(
       'Search records',
       testCallOptions(),
     );
-    assert.ok(result.ok);
+    if (!result.ok) throw result.error;
+    assert.equal(result.value.content, 'hello');
     assert.equal(calls, 1);
   });
 }

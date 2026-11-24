@@ -13,7 +13,6 @@ import {
   decodeListCursor,
   embedRecord,
   encodeListCursor,
-  FallbackQueryEmbedding,
   type IRagFilteredDeleter,
   type IRagScanner,
   listCursorScope,
@@ -65,8 +64,7 @@ export interface QdrantRagConfig extends RecordEmbeddingConfig {
   url: string;
   collectionName: string;
   embedder: IRetrievalEmbedder;
-  /** Retry a failed caller query embedding with the store embedder. Default: true.
-   *  TextOnlyEmbedding is always embedded by the store, regardless of this option. */
+  /** @deprecated Query embedding failures always propagate. */
   fallbackOnQueryEmbeddingError?: boolean;
   /**
    * Asked for fresh on every request — never cached — so a rotating key
@@ -90,7 +88,6 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
   private readonly collectionName: string;
   private readonly embedder: IRetrievalEmbedder;
   private readonly fragmentSizeChars?: number;
-  private readonly fallbackOnQueryEmbeddingError: boolean;
   private readonly credential?: IApiKeyCredential;
   private readonly autoCreateCollection: boolean;
 
@@ -119,8 +116,6 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
     this.collectionName = config.collectionName;
     this.embedder = config.embedder;
     this.fragmentSizeChars = config.fragmentSizeChars;
-    this.fallbackOnQueryEmbeddingError =
-      config.fallbackOnQueryEmbeddingError ?? true;
     this.credential = config.credential;
     this.autoCreateCollection = config.autoCreateCollection ?? true;
   }
@@ -330,9 +325,7 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
       const safe =
         embedding instanceof TextOnlyEmbedding
           ? new QueryEmbedding(embedding.text, this.embedder, options)
-          : this.fallbackOnQueryEmbeddingError
-            ? new FallbackQueryEmbedding(embedding, this.embedder)
-            : embedding;
+          : embedding;
       const vector = await safe.toVector();
 
       const must: QdrantCondition[] = [];
@@ -406,7 +399,9 @@ export class QdrantRag implements IRag, IRagScanner, IRagFilteredDeleter {
         ok: false,
         error:
           contextExceededError(err) ??
-          this._scanFailure(err, 'QUERY_ERROR', options),
+          (err instanceof RagError
+            ? err
+            : this._scanFailure(err, 'QUERY_ERROR', options)),
       };
     }
   }

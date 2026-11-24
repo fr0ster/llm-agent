@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  EMBEDDING_CONTEXT_EXCEEDED,
   MODEL_CONTEXT_EXCEEDED,
   SmartAgentError,
 } from '../interfaces/types.js';
+import { toEmbeddingError } from './rag-error.js';
 import {
   contextExceededError,
   terminalRunError,
@@ -36,4 +38,24 @@ test('context overflow detection terminates on a cycle and leaves other terminal
   Object.assign(ordinary, { cause: ordinary });
   assert.equal(contextExceededError(ordinary), undefined);
   assert.equal(terminalRunError(ordinary), ordinary);
+});
+
+test('normalizes SDK embedding size errors with a status and original cause', () => {
+  const error = Object.assign(
+    new Error('Request failed with status code 400'),
+    {
+      response: {
+        status: 400,
+        data: { error: { code: 'context_length_exceeded' } },
+      },
+    },
+  );
+  const failure = toEmbeddingError(error);
+  assert.equal(failure.code, EMBEDDING_CONTEXT_EXCEEDED);
+  assert.equal(failure.status, 400);
+  assert.equal(failure.cause, error);
+  assert.equal(
+    terminalRunError(new Error('RAG wrapper', { cause: failure })),
+    failure,
+  );
 });

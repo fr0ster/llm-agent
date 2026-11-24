@@ -16,7 +16,9 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   contextExceededError,
-  terminalRunError,
+  embeddingContextExceededError,
+  httpStatusOf,
+  toRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import { composeStepInput } from './compose-step-input.js';
@@ -50,7 +52,7 @@ export interface AdaptiveRunResult {
   plan: AdaptivePlan;
   records: StepRecord[];
   stopReason?: string;
-  error?: OrchestratorError;
+  error?: SmartAgentError & { readonly stepId?: string };
   answerStreamed: boolean;
   usage: LlmUsage[];
   workerUsage: { worker: string; usage: LlmUsage; model?: string }[];
@@ -62,8 +64,14 @@ export class AdaptiveEpicFailError extends OrchestratorError {
   constructor(
     readonly result: AdaptiveRunResult,
     readonly epicFailTrace?: EpicFailTrace,
+    readonly stepId?: string,
+    failure?: SmartAgentError,
   ) {
-    super(result.stopReason ?? 'epicfail', 'COORDINATOR_STEP_FAILED');
+    super(
+      failure?.message ?? result.stopReason ?? 'epicfail',
+      failure?.code ?? 'COORDINATOR_STEP_FAILED',
+      { cause: failure, status: failure?.status },
+    );
   }
 }
 
@@ -72,9 +80,6 @@ export const DEFAULT_BUDGET: AdaptiveBudget = {
   maxSteps: Infinity,
   maxRevisions: Infinity,
 };
-
-const message = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
 
 /** Execute a plan until it answers, asks, awaits tools, or needs a stop report. */
 export async function runAdaptivePlan(
@@ -118,13 +123,14 @@ export async function runAdaptivePlan(
     usage,
     workerUsage,
   });
-  const failedRun = (error: SmartAgentError): AdaptiveRunResult => ({
+  const failedRun = (
+    error: NonNullable<AdaptiveRunResult['error']>,
+  ): AdaptiveRunResult => ({
     ...result('stopped', error.message),
     stopReason: error.message,
     error,
   });
   const stop = async (stopReason: string): Promise<AdaptiveRunResult> => {
-    let output: string;
     try {
       const report = await input.controller.report({
         request: input.request,
@@ -136,22 +142,13 @@ export async function runAdaptivePlan(
       });
       input.signal?.throwIfAborted();
       collect(report.usage);
-      output = report.text;
+      return { ...result('stopped', report.text), stopReason };
     } catch (error) {
-      const overflow = contextExceededError(error);
-      if (overflow) return failedRun(overflow);
-      input.signal?.throwIfAborted();
-      const terminal = terminalRunError(error);
-      if (terminal) return failedRun(terminal);
-      output = [
-        `Stopped: ${stopReason}`,
-        ...records.map(
-          (record) =>
-            `- ${record.stepId} (${record.kind}) ${record.status}${record.verdict ? `: ${record.verdict.verdict} — ${record.verdict.reason}` : ''}`,
-        ),
-      ].join('\n');
+      if (!contextExceededError(error) && !embeddingContextExceededError(error))
+        input.signal?.throwIfAborted();
+      collect((error as { usage?: LlmUsage } | null)?.usage);
+      return failedRun(toRunError(error, 'COORDINATOR_REPORT_FAILED'));
     }
-    return { ...result('stopped', output), stopReason };
   };
 
   while (cursor < plan.steps.length) {
@@ -196,8 +193,30 @@ export async function runAdaptivePlan(
       });
     };
 
+    const failStep = <T>(error: T, fallbackCode: string): AdaptiveRunResult => {
+      if (!contextExceededError(error) && !embeddingContextExceededError(error))
+        input.signal?.throwIfAborted();
+      const failure = toRunError(error, fallbackCode);
+      record.status = 'failed';
+      record.output = '';
+      record.error = failure.message;
+      finish();
+      return failedRun(
+        Object.assign(
+          new OrchestratorError(failure.message, failure.code, {
+            cause: error,
+            status:
+              httpStatusOf(failure) ??
+              (typeof error === 'object' && error !== null
+                ? httpStatusOf(error)
+                : undefined),
+          }),
+          { stepId: step.id, usageCalls: failure.usageCalls },
+        ),
+      );
+    };
+
     if (step.kind === 'work' || step.kind === 'check') {
-      let terminalError: SmartAgentError | undefined;
       // The composer uses map insertion order: retain current plan order even after jumps.
       const orderedLatest = new Map(
         plan.steps.flatMap((candidate) => {
@@ -230,19 +249,8 @@ export async function runAdaptivePlan(
           record.verdict = checked.verdict;
           record.output = JSON.stringify(checked.verdict);
         } catch (error) {
-          const overflow = contextExceededError(error);
-          if (!overflow) input.signal?.throwIfAborted();
           collect((error as { usage?: LlmUsage } | null)?.usage);
-          terminalError = overflow ?? terminalRunError(error);
-          if (terminalError) {
-            record.status = 'failed';
-            record.error = message(error);
-          } else {
-            record.verdict = {
-              verdict: 'fail',
-              reason: `controller check failed: ${message(error)}`,
-            };
-          }
+          return failStep(error, 'COORDINATOR_CHECK_FAILED');
         }
       } else {
         const source = plan.steps.find(
@@ -296,16 +304,21 @@ export async function runAdaptivePlan(
             });
           if (worked.errorClass === 'epicfail') {
             record.status = 'failed';
-            record.error = 'epicfail';
+            record.error = worked.error?.message ?? 'epicfail';
             finish();
-            throw new AdaptiveEpicFailError(
-              {
-                ...result('stopped', ''),
-                stopReason: `step ${step.id} epicfail`,
-              },
-              worked.epicFailTrace,
+            return failedRun(
+              new AdaptiveEpicFailError(
+                {
+                  ...result('stopped', ''),
+                  stopReason: `step ${step.id} epicfail`,
+                },
+                worked.epicFailTrace,
+                step.id,
+                worked.error,
+              ),
             );
           }
+          if (worked.error) throw worked.error;
           record.output = worked.output;
           if (worked.status === 'awaiting-external') {
             finish();
@@ -328,7 +341,6 @@ export async function runAdaptivePlan(
             );
           }
         } catch (error) {
-          if (error instanceof AdaptiveEpicFailError) throw error;
           const failed = error as { usage?: LlmUsage; model?: string } | null;
           if (failed?.usage) {
             collect(failed.usage);
@@ -338,41 +350,15 @@ export async function runAdaptivePlan(
               model: failed.model,
             });
           }
-          const overflow = contextExceededError(error);
-          if (!overflow) input.signal?.throwIfAborted();
-          record.status = 'failed';
-          record.output = '';
-          record.error = message(error);
-          terminalError = overflow ?? terminalRunError(error);
-          if (step.kind === 'check' && !terminalError)
-            record.verdict = {
-              verdict: 'fail',
-              reason: `worker check failed: ${record.error}`,
-            };
+          return failStep(
+            error,
+            step.kind === 'check'
+              ? 'COORDINATOR_CHECK_FAILED'
+              : 'COORDINATOR_STEP_FAILED',
+          );
         }
       }
       finish();
-      if (terminalError) return failedRun(terminalError);
-      if (step.kind === 'check' && !record.verdict) {
-        return failedRun(
-          new OrchestratorError(
-            `Check ${step.id} failed to retrieve a verdict: ${record.error}`,
-            'VERDICT_RETRIEVAL_FAILED',
-          ),
-        );
-      }
-      if (
-        step.kind === 'work' &&
-        record.status === 'failed' &&
-        !plan.steps
-          .slice(cursor + 1)
-          .some(
-            (candidate) =>
-              candidate.kind === 'check' && candidate.targets.includes(step.id),
-          )
-      ) {
-        return stop(`step ${step.id} failed: ${record.error}`);
-      }
       if (step.kind === 'check' && record.verdict) {
         const verdict = record.verdict;
         const branch =
@@ -423,15 +409,8 @@ export async function runAdaptivePlan(
         if (!validated.ok) throw new Error(validated.error);
         plan.steps = [...plan.steps.slice(0, cursor + 1), ...validated.value];
       } catch (error) {
-        const overflow = contextExceededError(error);
-        if (!overflow) input.signal?.throwIfAborted();
-        record.status = 'failed';
         collect((error as { usage?: LlmUsage } | null)?.usage);
-        record.error = message(error);
-        finish();
-        const terminal = overflow ?? terminalRunError(error);
-        if (terminal) return failedRun(terminal);
-        return stop(`revise failed: ${record.error}`);
+        return failStep(error, 'COORDINATOR_REVISE_FAILED');
       }
       finish();
     } else {

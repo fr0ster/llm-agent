@@ -107,8 +107,8 @@ The caller's `CallOptions.signal` governs cancellation.
 
 For retries, wrap the raw provider with `composeEmbedder` from
 `@mcp-abap-adt/llm-agent-rag` (or `composeResilientEmbedder` from core).
-The composition owns retry policy and batch chunking; defaults retry transient
-429/500/502/503 failures up to three times with exponential backoff.
+Composition applies batch chunking by default. Pass `retry` explicitly to
+configure retries for transient failures.
 `resolveEmbedder` and the server's resolution paths already apply this composition.
 
 HTTP errors remain `RagError` instances and carry `status: number`,
@@ -122,4 +122,4 @@ with `retry: false` and
 See [the composition and hub migration guide](../../docs/EMBEDDER_THROTTLING.md).
 
 `OllamaRag` applies core resilience composition internally, so its convenience
-API retains retries without adding another provider retry loop.
+API uses the default batch composition and surfaces provider failures.

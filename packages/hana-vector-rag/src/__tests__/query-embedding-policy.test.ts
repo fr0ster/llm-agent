@@ -81,7 +81,7 @@ describe('HanaVectorRag query embedding fallback policy', () => {
       assert.deepEqual(calls, ['query']);
     });
 
-    it(`handles a first rejection when the second call would succeed (fallback=${policy})`, async () => {
+    it(`returns the first rejection even when a second call would succeed (fallback=${policy})`, async () => {
       const failure = new RagError(
         'First query embedding failed',
         'EMBED_ERROR',
@@ -90,15 +90,10 @@ describe('HanaVectorRag query embedding fallback policy', () => {
       const rag = makeRag(embedder, fallbackOnQueryEmbeddingError);
       const result = await rag.query(new QueryEmbedding('query', embedder), 1);
 
-      if (fallbackOnQueryEmbeddingError === false) {
-        assert.equal(result.ok, false);
-        if (result.ok) assert.fail('Expected the first embedding failure');
-        assert.equal(result.error, failure);
-        assert.deepEqual(calls, ['query']);
-      } else {
-        assert.ok(result.ok);
-        assert.deepEqual(calls, ['query', 'query']);
-      }
+      assert.equal(result.ok, false);
+      if (result.ok) assert.fail('Expected the first embedding failure');
+      assert.equal(result.error, failure);
+      assert.deepEqual(calls, ['query']);
     });
 
     for (const fail of [false, true]) {
@@ -113,14 +108,7 @@ describe('HanaVectorRag query embedding fallback policy', () => {
 
         assert.deepEqual(calls, ['query']);
         assert.equal(result.ok, !fail);
-        if (!result.ok) {
-          if (fallbackOnQueryEmbeddingError === false) {
-            assert.equal(result.error, failure);
-          } else {
-            assert.equal(result.error.code, 'QUERY_ERROR');
-            assert.match(result.error.message, /Text-only embedding failed/);
-          }
-        }
+        if (!result.ok) assert.equal(result.error, failure);
       });
     }
   }
@@ -133,8 +121,8 @@ describe('HanaVectorRag query embedding fallback policy', () => {
 
     assert.equal(result.ok, false);
     if (result.ok) assert.fail('Expected a failed Result');
-    assert.equal(result.error.code, 'QUERY_ERROR');
-    assert.match(result.error.message, /Original query embedding failure/);
+    assert.equal(result.error.code, 'EMBED_ERROR');
+    assert.equal(result.error.cause, failure);
     assert.deepEqual(calls, ['query']);
   });
 });

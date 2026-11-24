@@ -77,8 +77,8 @@ URL. SmartServer selects document and query modes automatically.
 Both endpoints receive `truncation: false`. Embedding batches are split into
 requests of up to 1,000 texts and sized using a conservative UTF-8 estimate for
 documented model token limits. Voyage's tokenizer determines whether a request
-fits, and the adapter subdivides a batch if Voyage reports an aggregate token
-violation. A single text that exceeds model context surfaces the API error.
+fits. Per-input and aggregate token rejections surface as
+`EMBEDDING_CONTEXT_EXCEEDED`.
 Voyage documents context in tokens, so stores use their `fragmentSizeChars`.
 
 Reranking batches candidates into requests of up to 1,000 documents and uses
@@ -90,12 +90,8 @@ index and any metadata ID. Voyage's rerankers score each query-document pair wit
 cross-encoder. Scores from the same query and model are comparable across
 requests and can be merged directly. See the [Voyage reranker guide](https://docs.voyageai.com/docs/reranker).
 
-HTTP 429 waits according to `Retry-After`, which can be delay-seconds or an HTTP
-date. If the header is missing or invalid, the adapter waits two seconds. The
-caller can cancel the fetch and the wait with `CallOptions.signal`. Other HTTP
-failures carry `status`, `headers`, and `retryAfterSeconds` on a `RagError`.
-The raw provider surfaces 5xx responses immediately. `resolveEmbedder` applies
-the standard transient retry policy from `llm-agent-rag`.
+HTTP failures carry `status`, `headers`, and `retryAfterSeconds` on a
+`RagError`. Supply `CallOptions.signal` to cancel a request.
 
 Both providers accept `usage?: IUsageRecorder`. Call options can override the
 recorder. Each physical request records its model and the provider's

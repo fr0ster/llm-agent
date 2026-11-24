@@ -1,4 +1,4 @@
-import { contextExceededError } from '../errors/terminal-run-error.js';
+import { toEmbeddingError } from '../errors/rag-error.js';
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type { IEmbedResult, IQueryEmbedder } from '../interfaces/rag.js';
 import type { CallOptions } from '../interfaces/types.js';
@@ -23,11 +23,20 @@ export class QueryEmbedding implements IQueryEmbedding {
   }
 
   private _getResult(): Promise<IEmbedResult> {
-    this._result ??= this.embedder.embedQuery(this.text, {
-      ...this.options,
-      usage: this.options?.usage?.with({ role: 'embedding' }),
-    });
+    this._result ??= this.embed();
     return this._result;
+  }
+
+  private async embed(): Promise<IEmbedResult> {
+    try {
+      return await this.embedder.embedQuery(this.text, {
+        ...this.options,
+        preserveEmbeddingInput: true,
+        usage: this.options?.usage?.with({ role: 'embedding' }),
+      });
+    } catch (error) {
+      throw toEmbeddingError(error);
+    }
   }
 
   toVector(): Promise<number[]> {
@@ -58,18 +67,14 @@ export class TextOnlyEmbedding implements IQueryEmbedding {
   }
 }
 
-/**
- * Decorator: tries the inner embedding first; on failure falls back
- * to the supplied embedder.  Result is memoized so concurrent callers
- * share one promise — same contract as {@link QueryEmbedding}.
- */
+/** @deprecated Use the original query embedding directly. Failures propagate. */
 export class FallbackQueryEmbedding implements IQueryEmbedding {
-  private _vector: Promise<number[]> | null = null;
+  private vector: Promise<number[]> | null = null;
 
   constructor(
     private readonly inner: IQueryEmbedding,
-    private readonly fallback: IQueryEmbedder,
-    private readonly options?: CallOptions,
+    _fallback: IQueryEmbedder,
+    _options?: CallOptions,
   ) {}
 
   get text(): string {
@@ -77,16 +82,15 @@ export class FallbackQueryEmbedding implements IQueryEmbedding {
   }
 
   toVector(): Promise<number[]> {
-    this._vector ??= this.inner.toVector().catch((error) => {
-      const overflow = contextExceededError(error);
-      if (overflow) throw overflow;
-      return this.fallback
-        .embedQuery(this.text, {
-          ...this.options,
-          usage: this.options?.usage?.with({ role: 'embedding' }),
-        })
-        .then((r) => r.vector);
-    });
-    return this._vector;
+    this.vector ??= this.embed();
+    return this.vector;
+  }
+
+  private async embed(): Promise<number[]> {
+    try {
+      return await this.inner.toVector();
+    } catch (error) {
+      throw toEmbeddingError(error);
+    }
   }
 }

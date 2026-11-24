@@ -17,6 +17,7 @@ import {
 import { DefaultPipeline } from '../default-pipeline.js';
 import { PipelineExecutor } from '../executor.js';
 import type { StageHandlerRegistry } from '../handlers/index.js';
+import { pipelineToStream } from '../pipeline-to-stream.js';
 
 const overflow = new RagError('Prompt too long', MODEL_CONTEXT_EXCEEDED);
 const doc = { text: 'a skill', metadata: { id: 'skill:example' }, score: 1 };
@@ -266,3 +267,28 @@ test('pipeline tool selection surfaces a listing overflow beside a healthy clien
   assert.equal(result.error, overflow);
   assert.equal(llm.callCount, 0);
 });
+
+for (const throws of [false, true]) {
+  test(`pipeline surfaces one typed stage failure (throws=${throws})`, async () => {
+    const cause = new Error('Stage offline');
+    const pipeline = new DefaultPipeline({
+      stepperCoordinator: {
+        async execute() {
+          if (throws) throw cause;
+          return false;
+        },
+      },
+    });
+    const { deps, llm } = makeDefaultDeps();
+    pipeline.initialize(deps);
+    const chunks = await Array.fromAsync(
+      pipelineToStream(pipeline, 'work', [], testCallOptions()),
+    );
+    const failures = chunks.filter((chunk) => !chunk.ok);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0]?.error.code, 'PIPELINE_STAGE_FAILED');
+    if (throws) assert.equal(failures[0]?.error.cause, cause);
+    else assert.match(failures[0]?.error.message ?? '', /coordinator/);
+    assert.equal(llm.callCount, 0);
+  });
+}

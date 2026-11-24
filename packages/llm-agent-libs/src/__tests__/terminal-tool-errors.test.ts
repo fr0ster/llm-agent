@@ -157,18 +157,25 @@ for (const pipeline of [false, true]) {
   }
 
   for (const scenario of ['terminal-first', 'terminal-last', 'ordinary']) {
-    test(`${pipeline ? 'pipeline' : 'direct'} aggregates RAG queries with ${scenario} failures`, async () => {
+    const mode = pipeline ? 'pipeline' : 'direct';
+    const name =
+      scenario === 'ordinary'
+        ? `${mode} surfaces the first ordinary RAG failure`
+        : `${mode} aggregates RAG queries with ${scenario} failures`;
+    test(name, async () => {
       const first = new RagError('First query failed', 'QUERY_ERROR');
       const last = new RagError('Last query failed', 'QUERY_ERROR');
       const terminal = new RagError(
         'Prompt is too long',
         MODEL_CONTEXT_EXCEEDED,
       );
+      const queries: string[] = [];
       const { deps, llm } = makeDefaultDeps({
         ragStores: {
           first: {
             ...makeRag(),
             async query() {
+              queries.push('first');
               return {
                 ok: false,
                 error: scenario === 'terminal-first' ? terminal : first,
@@ -178,6 +185,7 @@ for (const pipeline of [false, true]) {
           last: {
             ...makeRag(),
             async query() {
+              queries.push('last');
               await setImmediate();
               return {
                 ok: false,
@@ -192,13 +200,16 @@ for (const pipeline of [false, true]) {
         flow.initialize(deps);
         deps.pipeline = flow;
       }
-      const result = await new SmartAgent(deps, {}).process(
+      const errors: Error[] = [];
+      for await (const chunk of new SmartAgent(deps, {}).streamProcess(
         'Find notes',
         testCallOptions(),
-      );
-      assert.ok(!result.ok);
-      const ordinary = pipeline ? last : first;
-      assert.equal(result.error, scenario === 'ordinary' ? ordinary : terminal);
+      )) {
+        if (!chunk.ok) errors.push(chunk.error);
+      }
+      assert.equal(errors.length, 1);
+      assert.equal(errors[0], scenario === 'ordinary' ? first : terminal);
+      assert.deepEqual(queries, ['first', 'last']);
       assert.equal(llm.callCount, 0);
     });
   }

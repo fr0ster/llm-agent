@@ -33,6 +33,7 @@ for (const role of ['plan', 'check', 'revise', 'report', 'worker'] as const) {
   for (const failure of [
     'truncated',
     'CREDENTIALS_REJECTED',
+    'LLM_TRANSPORT_FAILED',
     'ABORTED',
   ] as const) {
     test(`adaptive ${role} surfaces ${failure} through the agent`, async () => {
@@ -98,8 +99,15 @@ for (const role of ['plan', 'check', 'revise', 'report', 'worker'] as const) {
         );
         assert.equal(calls, role === 'plan' || role === 'worker' ? 1 : 2);
         assert.equal(result.ok, false);
-        if (failure !== 'truncated') assert.equal(result.error, providerError);
-        else assert.equal(result.error.code, 'LLM_OUTPUT_TRUNCATED');
+        assert.equal(
+          result.error.code,
+          failure === 'truncated' ? 'LLM_OUTPUT_TRUNCATED' : failure,
+        );
+        if (failure !== 'truncated') {
+          if (role === 'worker' || role === 'check' || role === 'revise')
+            assert.equal(result.error.cause, providerError);
+          else assert.equal(result.error, providerError);
+        }
       } finally {
         await handle.close();
       }

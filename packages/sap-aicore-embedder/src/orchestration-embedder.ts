@@ -6,6 +6,7 @@ import {
   type IUsageRecorder,
   RagError,
   startOperation,
+  toEmbeddingError,
 } from '@mcp-abap-adt/llm-agent';
 import { decodeEmbedding } from './decode-embedding.js';
 
@@ -130,7 +131,12 @@ export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
             : 'error',
         error,
       });
-      throw error;
+      if (
+        options?.signal?.aborted ||
+        (error instanceof Error && error.name === 'AbortError')
+      )
+        throw error;
+      throw toEmbeddingError(error);
     }
   }
 
@@ -189,7 +195,12 @@ export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
             : 'error',
         error,
       });
-      throw error;
+      if (
+        options?.signal?.aborted ||
+        (error instanceof Error && error.name === 'AbortError')
+      )
+        throw error;
+      throw toEmbeddingError(error);
     }
   }
 

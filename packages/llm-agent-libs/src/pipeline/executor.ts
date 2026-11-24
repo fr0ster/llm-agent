@@ -28,9 +28,12 @@
 
 import {
   contextExceededError,
+  embeddingContextExceededError,
   McpError,
+  OrchestratorError,
   type SmartAgentError,
   terminalRunError,
+  toRunError,
 } from '@mcp-abap-adt/llm-agent';
 import { normalizeMaxIterations } from '../config/normalize-max-iterations.js';
 import type { ISpan, ITracer } from '../tracer/types.js';
@@ -51,7 +54,7 @@ export class PipelineExecutor {
    * @param stages    - Stage definitions to execute in order.
    * @param ctx       - Mutable pipeline context.
    * @param parentSpan - Parent tracing span.
-   * @returns `true` if all stages completed successfully, `false` if aborted.
+   * @returns `true` on success, `false` with `ctx.error` on failure.
    */
   async executeStages(
     stages: StageDefinition[],
@@ -60,7 +63,11 @@ export class PipelineExecutor {
   ): Promise<boolean> {
     for (const stage of stages) {
       if (ctx.error) return false;
-      if (ctx.options?.signal?.aborted) return false;
+      const signal = ctx.options?.signal;
+      if (signal?.aborted) {
+        ctx.error = toRunError(signal.reason, 'ABORTED');
+        return false;
+      }
 
       // Evaluate `when` condition
       const shouldRun = evaluateCondition(stage.when, ctx);
@@ -98,8 +105,13 @@ export class PipelineExecutor {
         span.end();
         const failure =
           terminalRunError(err) ?? (err instanceof McpError ? err : undefined);
+        ctx.error ??= failure ?? toRunError(err, 'PIPELINE_STAGE_FAILED');
         if (failure) {
-          ctx.error = failure;
+          if (
+            contextExceededError(failure) ||
+            embeddingContextExceededError(failure)
+          )
+            ctx.error = failure;
           ctx.yield({ ok: false, error: failure });
         }
         ctx.options?.sessionLogger?.logStep(`stage_error_${stage.id}`, {
@@ -112,10 +124,18 @@ export class PipelineExecutor {
         phase: stage.id,
         duration: Date.now() - stageStart,
       });
-      span.setStatus(ok ? 'ok' : 'error');
+      if (!ok) {
+        ctx.error ??= signal?.aborted
+          ? toRunError(signal.reason, 'ABORTED')
+          : new OrchestratorError(
+              `Pipeline stage "${stage.id}" failed.`,
+              'PIPELINE_STAGE_FAILED',
+            );
+      }
+      span.setStatus(ctx.error ? 'error' : 'ok');
       span.end();
 
-      if (!ok) return false;
+      if (ctx.error) return false;
     }
     return true;
   }
@@ -143,7 +163,8 @@ export class PipelineExecutor {
       const yieldChunk: PipelineContext['yield'] = (chunk) => {
         const failure = chunk.ok
           ? undefined
-          : contextExceededError(chunk.error);
+          : (contextExceededError(chunk.error) ??
+            embeddingContextExceededError(chunk.error));
         if (failure) stop(failure);
         if (!overflow) ctx.yield(chunk);
       };
@@ -155,9 +176,12 @@ export class PipelineExecutor {
         },
         set(target, key, value, receiver) {
           if (key === 'error') {
-            const failure = contextExceededError(value);
+            const failure =
+              contextExceededError(value) ??
+              embeddingContextExceededError(value);
             if (failure) stop(failure);
             if (overflow) return Reflect.set(target, key, overflow, receiver);
+            if (target.error) return true;
           }
           return Reflect.set(target, key, value, receiver);
         },

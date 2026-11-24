@@ -168,16 +168,13 @@ for (const thrown of [false, true]) {
           await assert.rejects(ordinary.result, /Unavailable/);
         } else {
           const fallback = await ordinary.result;
-          assert.equal(fallback.ok, !thrown);
+          assert.equal(fallback.ok, store === 'memory');
           if (!fallback.ok) {
-            assert.equal(
-              fallback.error.code,
-              operation === 'query' ? 'QUERY_ERROR' : 'UPSERT_ERROR',
-            );
+            assert.equal(fallback.error.code, 'CONFIG_ERROR');
           }
         }
         assert.equal(ordinary.model.calls(), 1);
-        assert.equal(embeddings, !thrown && store === 'vector' ? 1 : 0);
+        assert.equal(embeddings, 0);
       });
     }
   }

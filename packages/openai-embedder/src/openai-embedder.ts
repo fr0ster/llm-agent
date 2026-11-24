@@ -3,10 +3,12 @@ import type { IEmbedderBatch, IEmbedResult } from '@mcp-abap-adt/llm-agent';
 import {
   beginEmbeddingRequest,
   type CallOptions,
+  embeddingErrorCode,
   type IUsageRecorder,
   parseRetryAfter,
   RagError,
   startOperation,
+  toEmbeddingError,
   withProviderAttempt,
 } from '@mcp-abap-adt/llm-agent';
 
@@ -100,7 +102,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
         throw Object.assign(
           new RagError(
             `OpenAI embed error: HTTP ${res.status} - ${errorText}`,
-            'EMBED_ERROR',
+            embeddingErrorCode(res.status, errorText),
           ),
           {
             status: res.status,
@@ -139,7 +141,12 @@ export class OpenAiEmbedder implements IEmbedderBatch {
             : 'error',
         error: err,
       });
-      throw err;
+      if (
+        options?.signal?.aborted ||
+        (err instanceof Error && err.name === 'AbortError')
+      )
+        throw err;
+      throw toEmbeddingError(err);
     }
   }
 
@@ -191,7 +198,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
         throw Object.assign(
           new RagError(
             `OpenAI batch embed error: HTTP ${res.status} - ${errorText}`,
-            'EMBED_ERROR',
+            embeddingErrorCode(res.status, errorText),
           ),
           {
             status: res.status,
@@ -240,7 +247,12 @@ export class OpenAiEmbedder implements IEmbedderBatch {
             : 'error',
         error: err,
       });
-      throw err;
+      if (
+        options?.signal?.aborted ||
+        (err instanceof Error && err.name === 'AbortError')
+      )
+        throw err;
+      throw toEmbeddingError(err);
     }
   }
 }

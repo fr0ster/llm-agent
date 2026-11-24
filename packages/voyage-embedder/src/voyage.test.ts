@@ -1,15 +1,12 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
-import { EventEmitter, once } from 'node:events';
 import { test } from 'node:test';
 import {
   asymmetricEmbedder,
-  CircuitBreaker,
   type IUsageRecorder,
   RagError,
   type RagResult,
   type UsageInput,
-  withCircuitBreaker,
 } from '@mcp-abap-adt/llm-agent';
 import { VoyageEmbedder, VoyageReranker } from './index.js';
 
@@ -214,7 +211,7 @@ test('embedding sends an input above the UTF-8 estimate budget by itself', async
   );
 });
 
-test('subdivides server-reported aggregate token violations and preserves a context-length error', async (t) => {
+test('reports both aggregate and per-input token violations without retrying', async (t) => {
   const batches: string[][] = [];
   t.mock.method(
     globalThis,
@@ -244,104 +241,45 @@ test('subdivides server-reported aggregate token violations and preserves a cont
     ...embeddingConfig,
     model: 'model-with-unlisted-token-limit',
   });
-  const result = await embedder.embedBatch(['a', 'aa', 'aaa']);
-  assert.deepEqual(
-    result.map((item) => item.vector),
-    [[1], [2], [3]],
-  );
-  await assert.rejects(embedder.embedBatch(['long', 'a']), {
-    code: 'EMBED_ERROR',
-    status: 400,
-  });
+  for (const batch of [
+    ['a', 'aa', 'aaa'],
+    ['long', 'a'],
+  ]) {
+    await assert.rejects(embedder.embedBatch(batch), {
+      code: 'EMBEDDING_CONTEXT_EXCEEDED',
+      status: 400,
+    });
+  }
   assert.deepEqual(batches, [
     ['a', 'aa', 'aaa'],
-    ['a', 'aa'],
-    ['aaa'],
     ['long', 'a'],
   ]);
 });
 
-test('429 honors Retry-After through repeated refusals without tripping the circuit breaker', async (t) => {
+test('embedding returns the first 429 with Retry-After metadata', async (t) => {
   const records: UsageInput[] = [];
-  const attempts: number[] = [];
-  t.mock.method(
-    globalThis,
-    'fetch',
-    async (_url: string, init?: RequestInit) => {
-      assert.equal(init?.signal, undefined);
-      attempts.push(performance.now());
-      return attempts.length <= 12
-        ? new Response('rate limited', {
-            status: 429,
-            headers: { 'Retry-After': attempts.length <= 3 ? '0.025' : '0' },
-          })
-        : embeddingReply(['a']);
-    },
-  );
-  const breaker = new CircuitBreaker({ failureThreshold: 1 });
-  const embedder = withCircuitBreaker(
-    new VoyageEmbedder({ ...embeddingConfig, usage: recording(records) }),
-    breaker,
-  );
-  assert.deepEqual((await embedder.embed('a')).vector, [1]);
-  assert.equal(attempts.length, 13);
-  for (let i = 1; i <= 3; i++) assert.ok(attempts[i] - attempts[i - 1] >= 20);
-  assert.equal(breaker.isCallPermitted, true);
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => {
+    calls++;
+    return new Response('rate limited', {
+      status: 429,
+      headers: { 'Retry-After': '0.025' },
+    });
+  });
+  const embedder = new VoyageEmbedder({
+    ...embeddingConfig,
+    usage: recording(records),
+  });
+  await assert.rejects(embedder.embed('a'), {
+    code: 'EMBED_ERROR',
+    status: 429,
+    retryAfterSeconds: 0.025,
+  });
+  assert.equal(calls, 1);
   assert.deepEqual(
     records.map((record) => record.outcome),
-    [...Array.from({ length: 12 }, () => 'error'), 'ok'],
+    ['error'],
   );
-  const operations = records.filter(
-    (record) => record.kind === 'embedding.call',
-  );
-  assert.equal(new Set(operations.map((record) => record.operationId)).size, 1);
-  assert.deepEqual(
-    operations.map((record) => record.providerAttempt),
-    Array.from({ length: 13 }, (_, i) => i),
-  );
-});
-
-test('caller abort cancels a waiting 429 with no additional request', {
-  timeout: 2_000,
-}, async (t) => {
-  const controller = new AbortController();
-  const reason = new Error('cancelled by caller');
-  const events = new EventEmitter();
-  const waiting = once(events, 'waiting', { signal: t.signal });
-  t.after(() => controller.abort(reason));
-  let calls = 0;
-  t.mock.method(
-    globalThis,
-    'fetch',
-    async (_url: string, init?: RequestInit) => {
-      assert.equal(init?.signal, controller.signal);
-      calls++;
-      return new Response('', {
-        status: 429,
-        headers: { 'Retry-After': '7200' },
-      });
-    },
-  );
-  const originalSetTimeout = globalThis.setTimeout;
-  t.mock.method(
-    globalThis,
-    'setTimeout',
-    (callback: () => void, delay: number) => {
-      if (delay === 7_200_000) events.emit('waiting');
-      return originalSetTimeout(callback, delay);
-    },
-  );
-  const breaker = new CircuitBreaker({ failureThreshold: 1 });
-  const embedder = withCircuitBreaker(
-    new VoyageEmbedder(embeddingConfig),
-    breaker,
-  );
-  const embedding = embedder.embed('a', { signal: controller.signal });
-  await waiting;
-  controller.abort(reason);
-  await assert.rejects(embedding, (error) => error === reason);
-  assert.equal(calls, 1);
-  assert.equal(breaker.isCallPermitted, true);
 });
 
 test('raw providers surface 5xx immediately with HTTP metadata', async (t) => {
@@ -721,72 +659,12 @@ test('reranking names a candidate whose query-document pair Voyage rejects for c
   assert.deepEqual(batches, [['0', '1', 'long'], ['0', '1'], ['long']]);
 });
 
-test('reranking honors Retry-After without a retry cap in a later batch', async (t) => {
-  const attempts: number[] = [];
-  let firstBatchCalls = 0;
-  const records: UsageInput[] = [];
-  t.mock.method(
-    globalThis,
-    'fetch',
-    async (_url: string, init?: RequestInit) => {
-      const body = rerankBody(init);
-      if (body.documents[0] === '0') {
-        firstBatchCalls++;
-        return numberedRerankReply(body);
-      }
-      assert.deepEqual(body.documents, ['1000']);
-      attempts.push(performance.now());
-      if (attempts.length <= 12) {
-        return new Response('rate limited', {
-          status: 429,
-          headers: { 'Retry-After': attempts.length === 1 ? '0.025' : '0' },
-        });
-      }
-      return numberedRerankReply(body);
-    },
-  );
-
-  const candidates = numberedCandidates(1_001);
-  const reranker = new VoyageReranker({
-    ...rerankingConfig,
-    usage: recording(records),
-  });
-  assert.deepEqual(await reranker.rerank('q', candidates, { topK: 1 }), {
-    ok: true,
-    value: [{ ...candidates[1_000], score: 1 }],
-  });
-  assert.equal(firstBatchCalls, 1);
-  assert.equal(attempts.length, 13);
-  assert.ok(attempts[1] - attempts[0] >= 20);
-  const requests = records.filter((record) => record.kind === 'llm.call');
-  assert.equal(requests.length, records.length);
-  assert.equal(new Set(requests.map((record) => record.operationId)).size, 1);
-  assert.equal(new Set(requests.map((record) => record.physicalSeq)).size, 14);
-  assert.deepEqual(
-    requests.map((record) => record.providerAttempt),
-    [0, ...Array.from({ length: 13 }, (_, index) => index)],
-  );
-  assert.deepEqual(
-    requests
-      .filter((record) => record.outcome === 'ok')
-      .map((record) => record.inputTokens),
-    [1_000, 1],
-  );
-});
-
-test('aborting a rerank during Retry-After skips the retry and remaining batches', {
-  timeout: 2_000,
-}, async (t) => {
-  const controller = new AbortController();
-  const events = new EventEmitter();
-  const waiting = once(events, 'waiting', { signal: t.signal });
-  t.after(() => controller.abort());
+test('reranking surfaces the first 429 and skips remaining batches', async (t) => {
   const batches: string[] = [];
   t.mock.method(
     globalThis,
     'fetch',
     async (_url: string, init?: RequestInit) => {
-      assert.equal(init?.signal, controller.signal);
       const body = rerankBody(init);
       batches.push(body.documents[0]);
       return body.documents[0] === '1000'
@@ -797,25 +675,12 @@ test('aborting a rerank during Retry-After skips the retry and remaining batches
         : numberedRerankReply(body);
     },
   );
-  const originalSetTimeout = globalThis.setTimeout;
-  t.mock.method(
-    globalThis,
-    'setTimeout',
-    (callback: () => void, delay: number) => {
-      if (delay === 7_200_000) events.emit('waiting');
-      return originalSetTimeout(callback, delay);
-    },
-  );
-
-  const reranking = new VoyageReranker(rerankingConfig).rerank(
+  const result = await new VoyageReranker(rerankingConfig).rerank(
     'q',
     numberedCandidates(2_001),
-    { signal: controller.signal },
   );
-  await waiting;
-  controller.abort();
-  const result = await reranking;
-  if (result.ok) assert.fail('Expected the rerank to be aborted');
-  assert.equal(result.error.code, 'ABORTED');
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'RERANK_ERROR');
+  assert.equal(result.error.status, 429);
   assert.deepEqual(batches, ['0', '1000']);
 });

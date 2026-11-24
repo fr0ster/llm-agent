@@ -44,21 +44,13 @@ waits for Retry-After and retries until it succeeds, the caller aborts, or a
 different error occurs. VectorRag applies configured document enrichers before
 storing and embedding the record.
 
-## Query embedding fallback
+## Query embedding
 
-`VectorRagConfig.fallbackOnQueryEmbeddingError?: boolean` defaults to `true`:
-if a caller-supplied query embedding rejects, `VectorRag` tries its own embedder.
-Set it to `false` to return the first failure as a failed `Result` without a
-second embedder call:
-
-```typescript
-const rag = new VectorRag(embedder, { fallbackOnQueryEmbeddingError: false });
-```
-
-An explicit `TextOnlyEmbedding` is always embedded once by the store. If query
-preprocessors change the text, the transformed query is embedded once; a failure
-is returned without fallback under either policy. Successful caller embeddings
-are reused when the text is unchanged.
+The store returns the first query embedding failure as a failed `Result`.
+The `fallbackOnQueryEmbeddingError` option is deprecated. An explicit
+`TextOnlyEmbedding` uses the store embedder once. If query preprocessing
+changes the text, the store embeds the transformed query once. Unchanged
+queries reuse the caller's embedding.
 
 ## Migration from 12.0.0
 
@@ -207,7 +199,7 @@ Ordering is stable within an unchanged backend store, without snapshot isolation
 across pages. Pass `CallOptions.signal` to cancel with an `ABORTED` result.
 
 
-`composeResilientEmbedder` accepts `maxInputChars` (default `24000`, `0` disables). Single-input `embed` calls keep only the beginning of oversized input before calling the provider, including query embeddings built by the library. Stored record inputs and batch inputs are unchanged. Input-too-long errors are not retried. Usage schema 1 now includes optional `errorStatus` and `errorName` on failed LLM and embedding calls: the HTTP status from the cause chain and the root-cause class name. No error message is stored, since SDK messages may quote the request or the response.
+`composeResilientEmbedder` accepts `maxInputChars` for explicit single-input callers. Library query embeddings and stored record inputs retain the full text. Provider size rejections surface as `EMBEDDING_CONTEXT_EXCEEDED`. Usage schema 1 now includes optional `errorStatus` and `errorName` on failed LLM and embedding calls: the HTTP status from the cause chain and the root-cause class name. No error message is stored, since SDK messages may quote the request or the response.
 
 ## Planner references and cache usage
 
@@ -234,7 +226,7 @@ See [MIGRATION-v32](../../docs/MIGRATION-v32.md) for wiring, migration reports, 
 disables ordinary retries while routing HTTP 429 through the existing shared
 quota gate. Use `new WaitAsTold({ fallbackBackoffMs: 2000 })` to honor Retry-After
 and otherwise reuse exponential backoff without an attempt limit or timeout.
-The 24000-character input cap, batch chunking and usage attempt tracking remain.
+Batch chunking and usage attempt tracking remain available.
 Provider internal retries must also be disabled. Put `withCircuitBreaker` outside
 this composition so pending 429 waits do not count as failures.
 

@@ -3,11 +3,13 @@ import {
   beginEmbeddingRequest,
   type CallOptions,
   composeResilientEmbedder,
+  embeddingErrorCode,
   type IUsageRecorder,
   parseRetryAfter,
   RagError,
   startOperation,
   symmetricEmbedder,
+  toEmbeddingError,
   VectorRag,
   type VectorRagConfig,
   withProviderAttempt,
@@ -113,7 +115,9 @@ export class OllamaEmbedder implements IEmbedderBatch {
     return Object.assign(
       new RagError(
         `Ollama ${action} error: HTTP ${response.status} - ${body}`,
-        'EMBED_ERROR',
+        action === 'model info'
+          ? 'EMBED_ERROR'
+          : embeddingErrorCode(response.status, body),
       ),
       {
         status: response.status,
@@ -212,7 +216,12 @@ export class OllamaEmbedder implements IEmbedderBatch {
             : 'error',
         error: err,
       });
-      throw err;
+      if (
+        options?.signal?.aborted ||
+        (err instanceof Error && err.name === 'AbortError')
+      )
+        throw err;
+      throw toEmbeddingError(err);
     }
   }
 }

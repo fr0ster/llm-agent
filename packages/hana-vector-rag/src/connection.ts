@@ -5,6 +5,7 @@ import type { RecordCacheOptions } from './record-cache.js';
 export interface HanaVectorRagConfig extends RecordEmbeddingConfig {
   /** Retry a failed caller query embedding with the store embedder. Default: true.
    *  TextOnlyEmbedding is always embedded by the store, regardless of this option. */
+  /** @deprecated Query embedding failures always propagate. */
   fallbackOnQueryEmbeddingError?: boolean;
   recordCache?: RecordCacheOptions;
   /** The ADDRESS only. A string carrying credentials is refused below. */

@@ -188,10 +188,7 @@ for (const mode of [
           assert.equal(input.sessionId, input.caller?.sessionId);
           finalized++;
           assert.equal(input.interpreterContentStreamed, mode === 'streamed');
-          assert.equal(
-            input.objective,
-            mode === 'throw' || mode === 'invalid' ? input.prompt : 'objective',
-          );
+          assert.equal(input.objective, 'objective');
           if (!input.interpreterContentStreamed)
             input.onPartial?.({
               kind: 'content',
@@ -232,14 +229,31 @@ for (const mode of [
       },
     };
     const callOptions = testCallOptions(options);
+    const expectedError =
+      mode === 'throw' || mode === 'invalid'
+        ? 'COORDINATOR_PLAN_FAILED'
+        : mode === 'load-fail'
+          ? 'COORDINATOR_RECORD_LOAD_FAILED'
+          : mode === 'save-fail'
+            ? 'COORDINATOR_RECORD_SAVE_FAILED'
+            : undefined;
+    const errors: string[] = [];
     for await (const chunk of pipelineToStream(
       pipeline,
       [...prior, { role: 'user', content: 'request' }],
       [],
       callOptions,
     )) {
-      assert.equal(chunk.ok, true);
       if (chunk.ok) chunks.push(chunk.value);
+      else errors.push(chunk.error.code);
+    }
+    assert.deepEqual(errors, expectedError ? [expectedError] : []);
+    if (expectedError) {
+      assert.equal(workers.length, mode === 'save-fail' ? 1 : 0);
+      assert.equal(finalized, 0);
+      assert.ok(!chunks.some((chunk) => chunk.finishReason));
+      await handle.close();
+      return;
     }
     assert.deepEqual(inputs[0]?.history, prior);
     if (workers.length) assert.deepEqual(workers[0]?.history, prior);
@@ -269,36 +283,24 @@ for (const mode of [
       assert.deepEqual(chunks.find((c) => c.toolCalls)?.toolCalls, [
         { index: 0, id: 'ext:1', name: 'lookup', arguments: '{"q":"x"}' },
       ]);
-    if (mode === 'throw' || mode === 'invalid')
-      assert.ok(logs.includes('adaptive_plan_fallback'));
-    if (mode === 'save-fail')
-      assert.ok(logs.includes('adaptive_record_save_failed'));
-    if (mode === 'load-fail')
-      assert.ok(logs.includes('adaptive_record_load_failed'));
     assert.ok(logs.includes('adaptive_plan'));
     assert.ok(logs.includes('adaptive_run'));
     const saved = await store.load(JSON.stringify(['test-user', 'session']));
-    if (mode !== 'save-fail') {
-      assert.equal(
-        saved?.plan.spec?.raw,
-        mode === 'throw' || mode === 'invalid' ? undefined : 'request',
-      );
-      assert.ok(saved?.runId);
-    }
+    assert.equal(saved?.plan.spec?.raw, 'request');
+    assert.ok(saved?.runId);
     const response = await handle.agent.process('next', callOptions);
     assert.ok(response.ok, response.ok ? undefined : response.error.message);
     assert.ok(!inputs[1]?.history.some((m) => m.content === 'next'));
-    if (mode !== 'save-fail' && mode !== 'load-fail')
-      assert.equal(
-        inputs[1]?.previousRun?.outcome,
-        mode === 'ask'
-          ? 'asked'
-          : mode === 'external'
-            ? 'awaiting-external'
-            : mode === 'stopped'
-              ? 'stopped'
-              : 'answered',
-      );
+    assert.equal(
+      inputs[1]?.previousRun?.outcome,
+      mode === 'ask'
+        ? 'asked'
+        : mode === 'external'
+          ? 'awaiting-external'
+          : mode === 'stopped'
+            ? 'stopped'
+            : 'answered',
+    );
     await handle.close();
   });
 }
@@ -578,29 +580,28 @@ for (const method of ['plan', 'check', 'revise'] as const) {
           {
             name: 'executor',
             async run() {
-              return { output: 'fallback answer' };
+              return assert.fail('unexpected fallback worker');
             },
           },
         ],
       ]),
     });
-    assert.equal(await handler.execute(ctx, {}, span), method !== 'check');
+    assert.equal(await handler.execute(ctx, {}, span), false);
     assert.equal(logged.length, 1);
     assert.equal(
       logged[0]?.component,
       method === 'check' ? 'reviewer' : 'planner',
     );
     assert.equal(logged[0]?.totalTokens, 15);
+    assert.equal(chunks.map((chunk) => chunk.content).join(''), '');
     assert.equal(
-      chunks.map((chunk) => chunk.content).join(''),
-      method === 'plan'
-        ? 'fallback answer'
-        : method === 'check'
-          ? ''
-          : 'stop report',
+      ctx.error?.code,
+      {
+        plan: 'COORDINATOR_PLAN_FAILED',
+        check: 'VERDICT_RETRIEVAL_FAILED',
+        revise: 'COORDINATOR_REVISE_FAILED',
+      }[method],
     );
-    if (method === 'check')
-      assert.equal(ctx.error?.code, 'VERDICT_RETRIEVAL_FAILED');
   });
 }
 
@@ -761,7 +762,9 @@ for (const mode of ['listed', 'mixed', 'thrown'] as const) {
         ],
       ]),
     });
-    assert.equal(await handler.execute(ctx, {}, span), true);
+    assert.equal(await handler.execute(ctx, {}, span), mode !== 'thrown');
+    if (mode === 'thrown')
+      assert.equal(ctx.error?.code, 'COORDINATOR_STEP_FAILED');
     assert.equal(logged.length, mode === 'mixed' ? 2 : 1);
     assert.equal(logged[0]?.totalTokens, 15);
     assert.equal(logged[0]?.component, 'executor');
@@ -828,7 +831,9 @@ for (const kind of ['work', 'check'] as const) {
     assert.equal(calls, 1);
     assert.equal(ctx.error?.code, 'COORDINATOR_STEP_FAILED');
     assert.deepEqual(
-      (ctx.error as unknown as { epicFailTrace: unknown }).epicFailTrace,
+      ctx.error && 'epicFailTrace' in ctx.error
+        ? ctx.error.epicFailTrace
+        : undefined,
       trace,
     );
     assert.ok(!chunks.some((chunk) => chunk.finishReason));

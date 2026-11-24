@@ -122,16 +122,15 @@ describe('FallbackQueryEmbedding', () => {
     assert.equal(fallback.callCount, 0);
   });
 
-  it('toVector() falls back to fallback embedder when inner fails', async () => {
+  it('toVector() propagates the inner failure without fallback', async () => {
     const inner = new TextOnlyEmbedding('hello'); // always rejects on toVector
     const fallbackEmbedder = makeStubEmbedder();
     const fqe = new FallbackQueryEmbedding(
       inner,
       symmetricEmbedder(fallbackEmbedder),
     );
-    const vector = await fqe.toVector();
-    assert.deepEqual(vector, [1, 2, 3]);
-    assert.equal(fallbackEmbedder.callCount, 1);
+    await assert.rejects(fqe.toVector(), { code: 'EMBED_ERROR' });
+    assert.equal(fallbackEmbedder.callCount, 0);
   });
 
   it('text property reflects inner text', () => {
@@ -142,18 +141,24 @@ describe('FallbackQueryEmbedding', () => {
     );
     assert.equal(fqe.text, 'my query');
   });
+});
 
-  it('fallback result is memoized', async () => {
-    const inner = new TextOnlyEmbedding('hello');
-    const fallbackEmbedder = makeStubEmbedder();
-    const fqe = new FallbackQueryEmbedding(
-      inner,
-      symmetricEmbedder(fallbackEmbedder),
-    );
-
-    await fqe.toVector();
-    await fqe.toVector();
-
-    assert.equal(fallbackEmbedder.callCount, 1);
+it('memoizes a failed query embedding without retrying', async () => {
+  const failure = new Error('embedding unavailable');
+  let calls = 0;
+  const query = new QueryEmbedding('hello', {
+    embedQuery() {
+      calls++;
+      throw failure;
+    },
   });
+  const outcomes = await Promise.allSettled([
+    query.toVector(),
+    query.getUsage(),
+  ]);
+  for (const outcome of outcomes) {
+    assert.equal(outcome.status, 'rejected');
+    assert.equal(outcome.reason.cause, failure);
+  }
+  assert.equal(calls, 1);
 });

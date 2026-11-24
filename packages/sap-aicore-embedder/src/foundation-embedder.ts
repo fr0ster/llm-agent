@@ -3,9 +3,11 @@ import type { IEmbedderBatch, IEmbedResult } from '@mcp-abap-adt/llm-agent';
 import {
   beginEmbeddingRequest,
   type CallOptions,
+  embeddingErrorCode,
   type IUsageRecorder,
   RagError,
   startOperation,
+  toEmbeddingError,
 } from '@mcp-abap-adt/llm-agent';
 import { decodeEmbedding } from './decode-embedding.js';
 import { resolveDeploymentId } from './deployments.js';
@@ -142,6 +144,8 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
           const text = await res.text().catch(() => '');
           throw new RagError(
             `SAP AI Core embeddings call failed: ${res.status} ${res.statusText} ${text}`,
+            embeddingErrorCode(res.status, text),
+            { status: res.status },
           );
         }
         const json = (await res.json()) as GeminiPredictResponse;
@@ -180,6 +184,8 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
         const text = await res.text().catch(() => '');
         throw new RagError(
           `SAP AI Core embeddings call failed: ${res.status} ${res.statusText} ${text}`,
+          embeddingErrorCode(res.status, text),
+          { status: res.status },
         );
       }
       const json = (await res.json()) as OpenAiEmbeddingsResponse;
@@ -200,7 +206,12 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
             : 'error',
         error,
       });
-      throw error;
+      if (
+        options?.signal?.aborted ||
+        (error instanceof Error && error.name === 'AbortError')
+      )
+        throw error;
+      throw toEmbeddingError(error);
     }
   }
 

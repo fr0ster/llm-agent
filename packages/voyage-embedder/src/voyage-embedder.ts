@@ -5,12 +5,12 @@ import {
   type IEmbedResult,
   RagError,
   startOperation,
+  toEmbeddingError,
   withChunk,
 } from '@mcp-abap-adt/llm-agent';
 import {
   VoyageClient,
   type VoyageClientConfig,
-  VoyageHttpError,
   type VoyageInputType,
 } from './voyage-client.js';
 
@@ -152,28 +152,12 @@ export class VoyageEmbedder implements IEmbedderBatch {
         };
       });
     } catch (error) {
-      // Voyage reports aggregate token violations as HTTP 400. Split only
-      // that batch; an individual input that exceeds its context is an error.
       if (
-        texts.length < 2 ||
-        !(error instanceof VoyageHttpError) ||
-        error.status !== 400 ||
-        !/\btotal\b[^.\n]{0,100}\btokens?\b|\btokens?\b[^.\n]{0,100}\btotal\b/i.test(
-          error.message,
-        )
-      ) {
+        options?.signal?.aborted ||
+        (error instanceof Error && error.name === 'AbortError')
+      )
         throw error;
-      }
-      const midpoint = Math.ceil(texts.length / 2);
-      const left = await this.requestBatch(texts.slice(0, midpoint), {
-        ...options,
-        usageOp: withChunk(operation, 0, 2),
-      });
-      const right = await this.requestBatch(texts.slice(midpoint), {
-        ...options,
-        usageOp: withChunk(operation, 1, 2),
-      });
-      return [...left, ...right];
+      throw toEmbeddingError(error);
     }
   }
 }
