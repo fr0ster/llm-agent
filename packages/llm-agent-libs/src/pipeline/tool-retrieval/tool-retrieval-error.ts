@@ -1,8 +1,4 @@
-import {
-  contextExceededError,
-  SmartAgentError,
-  terminalRunError,
-} from '@mcp-abap-adt/llm-agent';
+import { SmartAgentError, terminalRunError } from '@mcp-abap-adt/llm-agent';
 import {
   errorUsage,
   withUsageAttribution,
@@ -13,14 +9,11 @@ export function toolRetrievalError<T>(
   signal?: AbortSignal,
 ): SmartAgentError {
   const failure =
-    contextExceededError(error) ??
-    (error instanceof SmartAgentError && error.code === 'ABORTED'
-      ? error
-      : undefined) ??
+    terminalRunError(error) ??
     (signal?.aborted
       ? new SmartAgentError('Tool retrieval aborted', 'ABORTED')
       : undefined) ??
-    (error instanceof SmartAgentError ? error : terminalRunError(error)) ??
+    (error instanceof SmartAgentError ? error : undefined) ??
     new SmartAgentError(
       error instanceof Error ? error.message : String(error),
       'TOOL_RETRIEVAL_FAILED',

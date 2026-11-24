@@ -26,10 +26,12 @@ test('reuses staged results and applies the legacy strategy before matching name
   const store = makeMetadataRag();
   const retriever = new RagToolRetriever({
     ragStores: ownedTestStores({ tools: store }),
-    ragResults: { tools: records },
     toolSelectionStrategy: new ScoreThresholdToolSelection(0.5),
   });
-  const result = await retriever.retrieve(request);
+  const result = await retriever.retrieve({
+    ...request,
+    ragResults: { tools: records },
+  });
   assert.equal(result.ok, true);
   if (result.ok) assert.deepEqual(result.value.names, ['keep']);
   assert.deepEqual(store.queryCalls, []);
@@ -43,11 +45,10 @@ test('queries all configured stores at the same k and logs fallback diagnostics'
   const retriever = new RagToolRetriever({
     ragAccess: testRequestAccess,
     ragStores: ownedTestStores({ tools, domain }),
-    ragResults,
     k: 7,
   });
   const result = await retriever.retrieve(
-    request,
+    { ...request, ragResults },
     testCallOptions({
       sessionLogger: {
         logStep(name, data) {
@@ -83,12 +84,12 @@ test('queries all configured stores at the same k and logs fallback diagnostics'
 test('hard mode offers the candidates when there are no RAG tool matches', async () => {
   const retriever = new RagToolRetriever({
     ragStores: {},
-    ragResults: { facts: [records[2]] },
     hardMode: true,
   });
   const result = await retriever.retrieve({
     ...request,
     candidates: [candidates[1]],
+    ragResults: { facts: [records[2]] },
   });
   assert.equal(result.ok, true);
   if (result.ok) assert.deepEqual(result.value.names, ['keep']);

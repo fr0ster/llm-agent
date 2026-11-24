@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import {
   type ILlm,
+  type IRag,
   type IToolRetriever,
   MODEL_CONTEXT_EXCEEDED,
   SmartAgentError,
@@ -17,10 +18,12 @@ import {
   makeLlm,
   makeMcpClient,
   makeRag,
+  ownedTestStores,
   testCallOptions,
   testRequestAccess,
 } from '../../../testing/index.js';
 import { DefaultPipeline } from '../../default-pipeline.js';
+import { RagToolRetriever } from '../../tool-retrieval/rag-tool-retriever.js';
 
 const tools = ['read', 'search', 'patch', 'write'].map((name) => ({
   name,
@@ -100,6 +103,55 @@ test('builder supplies role-filtered candidates before availability checks and s
         retriever: 'injected',
       },
     ]);
+  } finally {
+    await handle.close();
+  }
+});
+
+test('builder-injected RAG retriever searches separately for each process call', async () => {
+  const queries: string[] = [];
+  const store: IRag = {
+    ...makeRag(),
+    async query({ text }) {
+      queries.push(text);
+      const name = text.split(' ')[0];
+      return {
+        ok: true,
+        value: [{ text: name, metadata: { id: `tool:${name}` }, score: 1 }],
+      };
+    },
+  };
+  const offered: string[][] = [];
+  const mainLlm: ILlm = {
+    ...makeLlm([]),
+    async *streamChat(_messages, offeredTools) {
+      offered.push(offeredTools?.map(({ name }) => name) ?? []);
+      yield { ok: true, value: { content: 'done', finishReason: 'stop' } };
+    },
+  };
+  const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+    .withRagAccess(testRequestAccess)
+    .withMainLlm(mainLlm)
+    .withClassifier(
+      makeClassifier([{ type: 'action', text: 'file operation' }]),
+    )
+    .withMcpClients([makeMcpClient(tools)])
+    .withToolRetriever(
+      new RagToolRetriever({
+        ragAccess: testRequestAccess,
+        ragStores: ownedTestStores({ tools: store }),
+      }),
+    )
+    .build()
+    .then(unwrapBuilderResult);
+  try {
+    const inputs = ['read a file', 'write a file'];
+    for (const input of inputs) {
+      const response = await handle.agent.process(input, testCallOptions());
+      assert.equal(response.ok, true);
+    }
+    assert.deepEqual(queries, inputs);
+    assert.deepEqual(offered, [['read'], ['write']]);
   } finally {
     await handle.close();
   }

@@ -75,7 +75,6 @@ export class ToolSelectHandler implements IStageHandler {
       ctx.toolRetriever ??
       new RagToolRetriever({
         ragStores: ctx.ragStores,
-        ragResults: ctx.ragResults,
         ragAccess: ctx.ragAccess,
         embedder: ctx.embedder,
         toolSelectionStrategy: ctx.toolSelectionStrategy,
@@ -93,12 +92,15 @@ export class ToolSelectHandler implements IStageHandler {
       (ctx.toolRetriever
         ? ctx.inputText
         : (ctx.toolQueryText ?? ctx.ragText ?? ctx.inputText));
+    const request = ctx.toolRetriever
+      ? { text, candidates }
+      : { text, candidates, ragResults: ctx.ragResults };
     const options = ctx.toolRetriever
       ? { ...ctx.options, requestLogger: ctx.requestLogger }
       : ctx.options;
     let result: Result<ToolRetrievalResult, SmartAgentError>;
     try {
-      result = await retriever.retrieve({ text, candidates }, options);
+      result = await retriever.retrieve(request, options);
     } catch (error) {
       ctx.error = toolRetrievalError(error, options?.signal);
       return false;

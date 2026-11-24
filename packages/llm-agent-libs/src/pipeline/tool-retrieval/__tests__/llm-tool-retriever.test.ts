@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  EMBEDDING_CONTEXT_EXCEEDED,
   type ILlm,
   type IUsageRecorder,
   LlmError,
   MODEL_CONTEXT_EXCEEDED,
   reportLlmRequest,
+  SmartAgentError,
   startOperation,
   TOOL_RETRIEVAL_INVALID,
   type ToolCandidate,
@@ -143,6 +145,31 @@ test('preserves typed provider errors and usage when chat throws or returns a fa
     }
   }
 });
+
+for (const code of [
+  'ABORTED',
+  MODEL_CONTEXT_EXCEEDED,
+  EMBEDDING_CONTEXT_EXCEEDED,
+]) {
+  test(`preserves nested ${code} and provider usage`, async () => {
+    const terminal = new SmartAgentError('Terminal failure', code);
+    const error = Object.assign(new LlmError('Adapter failed'), {
+      cause: new Error('Upstream failure', { cause: terminal }),
+      usage,
+      model,
+    });
+    const result = await makeSelector(async () => ({
+      ok: false,
+      error,
+    })).retrieve(request);
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, code);
+    assert.equal(result.error.message, terminal.message);
+    assert.equal(result.error.usageCalls?.length, 1);
+    assert.equal(result.error.usageCalls?.[0].model, model);
+    assert.equal(result.error.usageCalls?.[0].totalTokens, usage.totalTokens);
+  });
+}
 
 test('records usage once with the selector role and the actual response model', async () => {
   const requestLogger = new DefaultRequestLogger();

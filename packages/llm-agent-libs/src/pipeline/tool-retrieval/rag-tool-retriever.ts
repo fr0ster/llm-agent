@@ -21,7 +21,6 @@ import { toolRetrievalError } from './tool-retrieval-error.js';
 
 export interface RagToolRetrieverOptions {
   readonly ragStores: SmartAgentRagStores;
-  readonly ragResults: Record<string, RagResult[]>;
   readonly ragAccess?: RagAccess;
   readonly embedder?: IQueryEmbedder;
   readonly toolSelectionStrategy?: IToolSelectionStrategy;
@@ -43,12 +42,18 @@ export class RagToolRetriever implements IToolRetriever {
   constructor(private readonly config: RagToolRetrieverOptions) {}
 
   async retrieve(
-    { text, candidates }: ToolRetrievalRequest,
+    {
+      text,
+      candidates,
+      ragResults = {},
+    }: ToolRetrievalRequest & {
+      /** Request-local results, populated on fallback for downstream stages. */
+      readonly ragResults?: Record<string, RagResult[]>;
+    },
     options?: CallOptions,
   ): Promise<Result<RagToolRetrievalResult, SmartAgentError>> {
     try {
-      const { ragStores, ragResults, ragAccess, embedder, hardMode } =
-        this.config;
+      const { ragStores, ragAccess, embedder, hardMode } = this.config;
       let allRagResults = Object.values(ragResults).flat();
       if (allRagResults.length === 0 && candidates.length > 0) {
         const k = this.config.k ?? 20;
