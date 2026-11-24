@@ -182,8 +182,15 @@ for (const returnsFailure of [false, true]) {
   });
 }
 
-for (const reportedIn of ['result and error', 'result', 'error', 'throw']) {
-  test(`failed work counts its three tokens once (usage in ${reportedIn})`, async () => {
+for (const [reportedIn, epicfail] of [
+  ['result and error', false],
+  ['result', false],
+  ['error', false],
+  ['throw', false],
+  ['result and error', true],
+  ['error', true],
+] as const) {
+  test(`failed work counts its three tokens once (usage in ${reportedIn}, epicfail=${epicfail})`, async () => {
     const error = new RagError('Worker failed', 'QUERY_ERROR');
     const failure =
       reportedIn === 'result'
@@ -197,6 +204,7 @@ for (const reportedIn of ['result and error', 'result', 'error', 'throw']) {
           : {
               output: 'Partial output',
               error: failure,
+              ...(epicfail && { errorClass: 'epicfail' as const }),
               usage: reportedIn === 'error' ? undefined : usage,
             },
       ],
@@ -206,6 +214,7 @@ for (const reportedIn of ['result and error', 'result', 'error', 'throw']) {
     const result = await runAdaptivePlan(input);
     assert.equal(calls.length, 1);
     assert.equal(result.error?.cause, failure);
+    assert.equal(result.error instanceof AdaptiveEpicFailError, epicfail);
     assert.deepEqual(result.usage, [usage]);
     assert.deepEqual(result.workerUsage, [
       { worker: work.worker, usage, model: undefined },

@@ -5,6 +5,7 @@ export {
 export { MissingProviderError } from './missing-provider-error.js';
 export {
   embeddingErrorCode,
+  embeddingOverflowError,
   toEmbeddingError,
   toRagError,
 } from './rag-error.js';

@@ -22,13 +22,16 @@ const fakeEmbedResponse = () => ({
   getEmbeddings: () => [{ embedding: [0], index: 0 }],
 });
 
-for (const message of [
-  'context length must be a positive integer',
-  'This model does not support the context window parameter',
-]) {
-  test(`orchestration preserves the parameter error: ${message}`, async (t) => {
+for (const [status, message] of [
+  [400, 'context length must be a positive integer'],
+  [400, 'This model does not support the context window parameter'],
+  [401, 'Unauthorized'],
+  [429, 'Rate limited'],
+  [500, 'Upstream rejected request'],
+] as const) {
+  test(`orchestration preserves the SDK error for HTTP ${status}: ${message}`, async (t) => {
     const rejection = Object.assign(new Error('Request failed'), {
-      response: { status: 400, data: { error: { message } } },
+      response: { status, data: { error: { message } } },
     });
     t.mock.method(OrchestrationEmbeddingClient.prototype, 'embed', async () => {
       throw rejection;
@@ -38,9 +41,10 @@ for (const message of [
       credential: { kind: 'bearer', token: async () => 'test' },
       apiBaseUrl: 'https://api.example.com',
     });
-    const expected = { code: 'LLM_HTTP_ERROR', status: 400, cause: rejection };
+    const expected = (error: Error) => error === rejection;
     await assert.rejects(embedder.embed('hello'), expected);
     await assert.rejects(embedder.embedBatch(['hello', 'world']), expected);
+    assert.equal('code' in rejection, false);
   });
 }
 
@@ -61,11 +65,13 @@ test('orchestration preserves an embedding context length rejection', async (t) 
     credential: { kind: 'bearer', token: async () => 'test' },
     apiBaseUrl: 'https://api.example.com',
   });
-  await assert.rejects(embedder.embed('hello'), {
+  const expected = {
     code: 'EMBEDDING_CONTEXT_EXCEEDED',
     status: 400,
     cause: rejection,
-  });
+  };
+  await assert.rejects(embedder.embed('hello'), expected);
+  await assert.rejects(embedder.embedBatch(['hello', 'world']), expected);
 });
 
 test('embed(): builds a fresh destination (credential.token()) on every call, not cached at construction', async () => {

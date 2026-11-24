@@ -111,26 +111,40 @@ test('openai: decodes base64 embedding', async () => {
   assert.deepEqual(Array.from(result.vector), [1, 2, 3]);
 });
 
-for (const message of [
-  'context length must be a positive integer',
-  'This model does not support the context window parameter',
-]) {
-  test(`foundation models preserve the parameter error: ${message}`, async () => {
-    installFetch((url) => {
-      if (url.includes('/v2/lm/deployments'))
-        return { body: deploymentList('text-embedding-3-small') };
-      return { body: { error: { message } }, status: 400 };
+for (const [model, makeEmbedder] of [
+  ['text-embedding-3-small', makeOpenAiEmbedder],
+  ['gemini-embedding', makeGeminiEmbedder],
+] as const) {
+  for (const [status, message, code] of [
+    [400, 'context length must be a positive integer', 'RAG_ERROR'],
+    [
+      400,
+      'This model does not support the context window parameter',
+      'RAG_ERROR',
+    ],
+    [401, 'Unauthorized', 'RAG_ERROR'],
+    [429, 'Rate limited', 'RAG_ERROR'],
+    [500, 'Upstream rejected request', 'RAG_ERROR'],
+    [
+      400,
+      'Input exceeds the maximum context length',
+      'EMBEDDING_CONTEXT_EXCEEDED',
+    ],
+  ] as const) {
+    test(`foundation ${model} reports ${code} for HTTP ${status}: ${message}`, async () => {
+      installFetch((url) => {
+        if (url.includes('/v2/lm/deployments'))
+          return { body: deploymentList(model) };
+        return { body: { error: { message } }, status };
+      });
+      const embedder = makeEmbedder();
+      await assert.rejects(embedder.embed('hello'), { code, status });
+      await assert.rejects(embedder.embedBatch(['hello', 'world']), {
+        code,
+        status,
+      });
     });
-    const embedder = makeOpenAiEmbedder();
-    await assert.rejects(embedder.embed('hello'), {
-      code: 'EMBED_ERROR',
-      status: 400,
-    });
-    await assert.rejects(embedder.embedBatch(['hello', 'world']), {
-      code: 'EMBED_ERROR',
-      status: 400,
-    });
-  });
+  }
 }
 
 test('openai: embedBatch sorts by index and returns vectors in input order', async () => {

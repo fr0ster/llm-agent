@@ -10,23 +10,19 @@ import type {
   LlmUsageAttribution,
   RunRecord,
 } from '@mcp-abap-adt/llm-agent';
-import {
-  contextExceededError,
-  embeddingContextExceededError,
-  toRunError,
-} from '@mcp-abap-adt/llm-agent';
+import { toRunError } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import {
   DEFAULT_BUDGET,
   runAdaptivePlan,
 } from '../../coordinator/adaptive/adaptive-interpreter.js';
-import { withUsageCalls } from '../../logger/llm-call-usage.js';
+import { errorUsage, withUsageCalls } from '../../logger/llm-call-usage.js';
 import {
   callerIdentityKey,
   resolveCallerIdentity,
 } from '../../policy/caller-identity.js';
 import type { ISpan } from '../../tracer/types.js';
-import { isAbortReason } from '../../utils/with-abort.js';
+import { runInterruption } from '../../utils/with-abort.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 import { terminalUsage } from './dag-coordinator.js';
@@ -70,6 +66,9 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
     const tail = history.at(-1);
     if (tail?.role === 'user' && tail.content === request) history.pop();
     const { controller, workers, runRecords, finalizer } = this.deps;
+    const signal = ctx.options?.signal;
+    const runError = <T>(error: T, fallbackCode: string) =>
+      runInterruption(signal, [error]) ?? toRunError(error, fallbackCode);
     const traceId = ctx.options?.trace?.traceId;
     const log = (key: string, data: object) =>
       ctx.options?.sessionLogger?.logStep(key, data);
@@ -83,7 +82,7 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
         logRoleUsage(ctx, component, value, role.model);
         return value;
       } catch (error) {
-        const failed = error as LlmUsageAttribution | null;
+        const failed = errorUsage(error);
         throw withUsageCalls(
           error,
           logRoleUsage(ctx, component, failed, role.model),
@@ -96,7 +95,7 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
         try {
           previousRun = await runRecords.load(recordKey);
         } catch (error) {
-          throw toRunError(error, 'COORDINATOR_RECORD_LOAD_FAILED');
+          throw runError(error, 'COORDINATOR_RECORD_LOAD_FAILED');
         }
       }
       let plan: AdaptivePlan;
@@ -116,12 +115,7 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
         );
         plan = planned.plan;
       } catch (error) {
-        if (
-          !contextExceededError(error) &&
-          !embeddingContextExceededError(error)
-        )
-          ctx.options?.signal?.throwIfAborted();
-        throw toRunError(error, 'COORDINATOR_PLAN_FAILED');
+        throw runError(error, 'COORDINATOR_PLAN_FAILED');
       }
       if (plan.spec) plan.spec.raw = request;
       log('adaptive_plan', {
@@ -182,14 +176,14 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
             finishedAt: Date.now(),
           });
         } catch (error) {
-          const failure = toRunError(error, 'COORDINATOR_RECORD_SAVE_FAILED');
+          const failure = runError(error, 'COORDINATOR_RECORD_SAVE_FAILED');
           if (!result.error) throw failure;
           log('adaptive_record_save_failed', { message: failure.message });
         }
       }
       if (result.error) {
         ctx.error = result.error;
-        if (!isAbortReason(result.error, ctx.options?.signal))
+        if (result.error.code !== 'ABORTED' || !signal?.aborted)
           ctx.yield({ ok: false, error: result.error });
         return false;
       }
@@ -270,10 +264,7 @@ export class AdaptiveCoordinatorHandler implements IStageHandler {
       });
       return true;
     } catch (error) {
-      ctx.error = toRunError(
-        error,
-        ctx.options?.signal?.aborted ? 'ABORTED' : 'COORDINATOR_STEP_FAILED',
-      );
+      ctx.error = runError(error, 'COORDINATOR_STEP_FAILED');
       return false;
     }
   }

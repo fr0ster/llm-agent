@@ -1,11 +1,11 @@
 import { Buffer } from 'node:buffer';
 import {
   type CallOptions,
+  embeddingOverflowError,
   type IEmbedderBatch,
   type IEmbedResult,
   RagError,
   startOperation,
-  toEmbeddingError,
   withChunk,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -157,7 +157,7 @@ export class VoyageEmbedder implements IEmbedderBatch {
         (error instanceof Error && error.name === 'AbortError')
       )
         throw error;
-      throw toEmbeddingError(error);
+      throw embeddingOverflowError(error) ?? error;
     }
   }
 }

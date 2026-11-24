@@ -256,22 +256,25 @@ test('reports both aggregate and per-input token violations without retrying', a
   ]);
 });
 
-for (const message of [
-  'context length must be a positive integer',
-  'This model does not support the context window parameter',
-]) {
-  test(`Voyage preserves the parameter error: ${message}`, async (t) => {
+for (const [status, message] of [
+  [400, 'context length must be a positive integer'],
+  [400, 'This model does not support the context window parameter'],
+  [401, 'Invalid API key'],
+  [429, 'Rate limited'],
+  [500, 'Upstream rejected request'],
+] as const) {
+  test(`Voyage preserves EMBED_ERROR for HTTP ${status}: ${message}`, async (t) => {
     t.mock.method(globalThis, 'fetch', async () =>
-      Response.json({ detail: message }, { status: 400 }),
+      Response.json({ detail: message }, { status }),
     );
     const embedder = new VoyageEmbedder(embeddingConfig);
     await assert.rejects(embedder.embed('hello'), {
       code: 'EMBED_ERROR',
-      status: 400,
+      status,
     });
     await assert.rejects(embedder.embedBatch(['hello', 'world']), {
       code: 'EMBED_ERROR',
-      status: 400,
+      status,
     });
   });
 }

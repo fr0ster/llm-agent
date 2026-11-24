@@ -8,6 +8,7 @@ import {
   readCallerResolution,
   withResolvedCaller,
 } from '../policy/caller-identity.js';
+import { runInterruption } from '../utils/with-abort.js';
 /**
  * DefaultPipeline — IPipeline implementation backed by PipelineExecutor + stage handlers.
  *
@@ -319,7 +320,9 @@ export class DefaultPipeline implements IPipeline {
           'PIPELINE_ERROR',
         );
     } catch (err) {
-      ctx.error = toRunError(err, 'PIPELINE_ERROR');
+      ctx.error =
+        runInterruption(options.signal, [err]) ??
+        toRunError(err, 'PIPELINE_ERROR');
     } finally {
       if (ctx.error) rootSpan.setStatus('error', ctx.error.message);
       rootSpan.end();

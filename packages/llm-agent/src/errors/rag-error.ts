@@ -20,22 +20,22 @@ const requestedContextLength =
 export function embeddingErrorCode(
   status: number | undefined,
   detail: string,
+  fallbackCode = 'EMBED_ERROR',
 ): string {
   if (status === 413) return EMBEDDING_CONTEXT_EXCEEDED;
   if (status !== undefined && status !== 400 && status !== 422)
-    return 'EMBED_ERROR';
+    return fallbackCode;
 
   const counts = requestedContextLength.exec(detail);
   return inputSizeRejections.some((pattern) => pattern.test(detail)) ||
     (counts && Number(counts[2]) > Number(counts[1]))
     ? EMBEDDING_CONTEXT_EXCEEDED
-    : 'EMBED_ERROR';
+    : fallbackCode;
 }
 
-/** Convert an SDK or custom embedder failure to a typed embedding error. */
-export function toEmbeddingError<T>(error: T): RagError {
-  const terminal =
-    contextExceededError(error) ?? embeddingContextExceededError(error);
+/** Classify an input-size rejection without changing other provider errors. */
+export function embeddingOverflowError<T>(error: T): RagError | undefined {
+  const terminal = embeddingContextExceededError(error);
   if (terminal) return toRagError(terminal, 'EMBED_ERROR');
   const source =
     typeof error === 'object' && error !== null ? error : undefined;
@@ -76,7 +76,14 @@ export function toEmbeddingError<T>(error: T): RagError {
       );
     }
   }
-  return toRagError(error, 'EMBED_ERROR');
+  return undefined;
+}
+
+/** Convert an SDK or custom embedder failure to a typed embedding error. */
+export function toEmbeddingError<T>(error: T): RagError {
+  const modelOverflow = contextExceededError(error);
+  if (modelOverflow) return toRagError(modelOverflow, 'EMBED_ERROR');
+  return embeddingOverflowError(error) ?? toRagError(error, 'EMBED_ERROR');
 }
 
 /** Keep provider codes and metadata across RAG Result boundaries. */

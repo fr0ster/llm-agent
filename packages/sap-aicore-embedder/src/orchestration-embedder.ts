@@ -3,10 +3,10 @@ import type { IEmbedderBatch, IEmbedResult } from '@mcp-abap-adt/llm-agent';
 import {
   beginEmbeddingRequest,
   type CallOptions,
+  embeddingOverflowError,
   type IUsageRecorder,
   RagError,
   startOperation,
-  toEmbeddingError,
 } from '@mcp-abap-adt/llm-agent';
 import { decodeEmbedding } from './decode-embedding.js';
 
@@ -136,7 +136,7 @@ export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
         (error instanceof Error && error.name === 'AbortError')
       )
         throw error;
-      throw toEmbeddingError(error);
+      throw embeddingOverflowError(error) ?? error;
     }
   }
 
@@ -200,7 +200,7 @@ export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
         (error instanceof Error && error.name === 'AbortError')
       )
         throw error;
-      throw toEmbeddingError(error);
+      throw embeddingOverflowError(error) ?? error;
     }
   }
 
@@ -219,7 +219,7 @@ export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
       '@sap-ai-sdk/orchestration'
     );
     const modelName = this
-      .model as unknown as import('@sap-ai-sdk/orchestration').EmbeddingModel;
+      .model as import('@sap-ai-sdk/orchestration').EmbeddingModel;
     return new OrchestrationEmbeddingClient(
       { embeddings: { model: { name: modelName } } },
       this.resourceGroup ? { resourceGroup: this.resourceGroup } : undefined,

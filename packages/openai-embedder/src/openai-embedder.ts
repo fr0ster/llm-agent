@@ -4,11 +4,11 @@ import {
   beginEmbeddingRequest,
   type CallOptions,
   embeddingErrorCode,
+  embeddingOverflowError,
   type IUsageRecorder,
   parseRetryAfter,
   RagError,
   startOperation,
-  toEmbeddingError,
   withProviderAttempt,
 } from '@mcp-abap-adt/llm-agent';
 
@@ -146,7 +146,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
         (err instanceof Error && err.name === 'AbortError')
       )
         throw err;
-      throw toEmbeddingError(err);
+      throw embeddingOverflowError(err) ?? err;
     }
   }
 
@@ -252,7 +252,7 @@ export class OpenAiEmbedder implements IEmbedderBatch {
         (err instanceof Error && err.name === 'AbortError')
       )
         throw err;
-      throw toEmbeddingError(err);
+      throw embeddingOverflowError(err) ?? err;
     }
   }
 }

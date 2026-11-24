@@ -234,26 +234,87 @@ test('adaptive planning exposes embedding overflow when a custom planner also ab
   }
 });
 
-for (const withUsage of [false, true]) {
-  test(`adaptive planning classifies a coded abort reason as ABORTED (usage=${withUsage})`, async (t) => {
-    const abort = new AbortController();
-    const reason = new LlmError('Cancelled', MODEL_CONTEXT_EXCEEDED);
-    if (withUsage) Object.assign(reason, { usage });
-    const handle = await buildAdaptiveAgent(async ({ signal }) => {
-      abort.abort(reason);
-      signal?.throwIfAborted();
-      return assert.fail('expected cancellation');
-    });
-    t.after(() => handle.close());
+for (const path of ['planner', 'worker', 'epicfail', 'executor'] as const) {
+  for (const withUsage of [false, true]) {
+    test(`agent reports the ${path} abort with a nested overflow (usage=${withUsage})`, async (t) => {
+      const abort = new AbortController();
+      const reason = new RagError('Cancelled', 'QUERY_ERROR', {
+        cause: new LlmError('Prompt too long', MODEL_CONTEXT_EXCEEDED),
+      });
+      if (withUsage) {
+        Object.assign(reason, {
+          usage,
+          ...(path === 'executor' && {
+            usageCalls: [
+              {
+                ...usage,
+                callId: 'cancelled-executor-call',
+                component: 'executor',
+                model: 'test-model',
+                durationMs: 0,
+              },
+            ],
+          }),
+        });
+      }
+      const logger = new DefaultRequestLogger();
+      const cancel = (signal?: AbortSignal): never => {
+        abort.abort(reason);
+        signal?.throwIfAborted();
+        return assert.fail('expected cancellation');
+      };
+      const handle =
+        path === 'executor'
+          ? await new SmartAgentBuilder({ skipModelValidation: true })
+              .withRagAccess(testRequestAccess)
+              .withMainLlm({
+                chat: async () => assert.fail('unexpected chat'),
+                streamChat: () => assert.fail('unexpected stream'),
+              })
+              .withClassification(false)
+              .withStepperCoordinator({
+                async execute(ctx) {
+                  return cancel(ctx.options?.signal);
+                },
+              })
+              .build()
+              .then(unwrapBuilderResult)
+          : await buildAdaptiveAgent(
+              async ({ signal }) =>
+                path === 'planner'
+                  ? cancel(signal)
+                  : { plan: { steps: [adaptiveSteps.worker], createdAt: 0 } },
+              async ({ signal }) => {
+                if (path === 'worker') return cancel(signal);
+                abort.abort(reason);
+                return { output: '', error: reason, errorClass: 'epicfail' };
+              },
+              logger,
+            );
+      t.after(() => handle.close());
 
-    const result = await handle.agent.process(
-      'Work',
-      testCallOptions({ signal: abort.signal }),
-    );
-    assert.ok(!result.ok);
-    assert.equal(result.error.code, 'ABORTED');
-    assert.equal(result.error.message, reason.message);
-  });
+      const result = await handle.agent.process(
+        'Work',
+        testCallOptions({ signal: abort.signal }),
+      );
+      assert.ok(!result.ok);
+      assert.equal(result.error.code, 'ABORTED');
+      assert.equal(result.error.message, reason.message);
+      assert.deepEqual(
+        'usage' in result.error ? result.error.usage : undefined,
+        withUsage ? usage : undefined,
+      );
+      assert.deepEqual(
+        result.error.usageCalls?.map(({ totalTokens }) => totalTokens) ?? [],
+        withUsage ? [3] : [],
+      );
+      if (path !== 'executor') {
+        const { totals } = logger.getSummary();
+        assert.equal(totals.requests, withUsage ? 1 : 0);
+        assert.equal(totals.totalTokens, withUsage ? 3 : 0);
+      }
+    });
+  }
 }
 
 for (const mode of [

@@ -57,7 +57,7 @@ for (const batch of [false, true]) {
       assert.equal(records[0].outcome, 'error');
     });
   }
-  test(`single attempt returns a typed network failure for ${mode}`, async (t) => {
+  test(`single attempt preserves network error identity for ${mode}`, async (t) => {
     let calls = 0;
     const error = new TypeError('network failure');
     t.mock.method(globalThis, 'fetch', async (url: URL | Request | string) => {
@@ -68,7 +68,7 @@ for (const batch of [false, true]) {
     const provider = new OllamaEmbedder({ model: 'test' });
     await assert.rejects(
       batch ? provider.embedBatch(['q']) : provider.embed('q'),
-      { code: 'EMBED_ERROR', cause: error },
+      (actual) => actual === error,
     );
     assert.equal(calls, 1);
   });

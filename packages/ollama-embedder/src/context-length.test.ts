@@ -77,24 +77,27 @@ test('uses the cached model context for each request and disables truncation', a
   assert.equal(shows, 2);
 });
 
-for (const message of [
-  'context length must be a positive integer',
-  'This model does not support the context window parameter',
-]) {
-  test(`Ollama preserves the parameter error: ${message}`, async (t) => {
+for (const [status, message] of [
+  [400, 'context length must be a positive integer'],
+  [400, 'This model does not support the context window parameter'],
+  [401, 'Unauthorized'],
+  [429, 'Rate limited'],
+  [500, 'Upstream rejected request'],
+] as const) {
+  test(`Ollama preserves EMBED_ERROR for HTTP ${status}: ${message}`, async (t) => {
     t.mock.method(globalThis, 'fetch', async (url: URL | Request | string) =>
       String(url).endsWith('/api/show')
         ? Response.json({})
-        : Response.json({ error: message }, { status: 400 }),
+        : Response.json({ error: message }, { status }),
     );
     const embedder = new OllamaEmbedder({ model: 'bge-m3' });
     await assert.rejects(embedder.embed('hello'), {
       code: 'EMBED_ERROR',
-      status: 400,
+      status,
     });
     await assert.rejects(embedder.embedBatch(['hello', 'world']), {
       code: 'EMBED_ERROR',
-      status: 400,
+      status,
     });
   });
 }

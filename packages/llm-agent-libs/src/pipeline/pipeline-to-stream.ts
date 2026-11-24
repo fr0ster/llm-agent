@@ -11,6 +11,7 @@ import { OrchestratorError, terminalRunError } from '@mcp-abap-adt/llm-agent';
 import type { IPipeline } from '../interfaces/pipeline.js';
 import { errorUsage, withUsageAttribution } from '../logger/llm-call-usage.js';
 import { withPipelineRequestLogger } from '../logger/pipeline-request-logger.js';
+import { runInterruption } from '../utils/with-abort.js';
 
 export async function* pipelineToStream(
   pipeline: IPipeline,
@@ -51,7 +52,8 @@ export async function* pipelineToStream(
   )
     .then(({ error }) => {
       if (error && !yieldedError) {
-        const terminal = terminalRunError(error);
+        const terminal =
+          runInterruption(opts?.signal, [error]) ?? terminalRunError(error);
         chunkQueue.push({
           ok: false,
           error:
@@ -71,7 +73,8 @@ export async function* pipelineToStream(
         chunkQueue.push({
           ok: false,
           error: withUsageAttribution(
-            terminalRunError(err) ??
+            runInterruption(opts?.signal, [err]) ??
+              terminalRunError(err) ??
               new OrchestratorError(String(err), 'PIPELINE_ERROR'),
             errorUsage(err),
           ),

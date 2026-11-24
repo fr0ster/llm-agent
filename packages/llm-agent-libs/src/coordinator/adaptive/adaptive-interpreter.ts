@@ -14,14 +14,10 @@ import type {
   StepRecord,
   StepStatus,
 } from '@mcp-abap-adt/llm-agent';
-import {
-  contextExceededError,
-  embeddingContextExceededError,
-  httpStatusOf,
-  toRunError,
-} from '@mcp-abap-adt/llm-agent';
+import { httpStatusOf, toRunError } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import { errorUsage } from '../../logger/llm-call-usage.js';
+import { runInterruption } from '../../utils/with-abort.js';
 import { composeStepInput } from './compose-step-input.js';
 import { parseVerdict, validateSteps } from './parse-plan.js';
 
@@ -67,14 +63,20 @@ export class AdaptiveEpicFailError extends OrchestratorError {
     readonly epicFailTrace?: EpicFailTrace,
     readonly stepId?: string,
     error?: SmartAgentError,
+    signal?: AbortSignal,
   ) {
-    const failure = error && toRunError(error, 'COORDINATOR_STEP_FAILED');
+    const interruption = runInterruption(signal, [error]);
+    const failure =
+      interruption ?? (error && toRunError(error, 'COORDINATOR_STEP_FAILED'));
     super(
       failure?.message ?? result.stopReason ?? 'epicfail',
       failure?.code ?? 'COORDINATOR_STEP_FAILED',
-      { cause: error, status: failure?.status ?? error?.status },
+      {
+        cause: failure?.code === 'ABORTED' ? failure : error,
+        status: failure?.status ?? error?.status,
+      },
     );
-    this.usageCalls = error?.usageCalls ?? failure?.usageCalls;
+    Object.assign(this, errorUsage(failure), errorUsage(error));
   }
 }
 
@@ -147,10 +149,11 @@ export async function runAdaptivePlan(
       collect(report.usage);
       return { ...result('stopped', report.text), stopReason };
     } catch (error) {
-      if (!contextExceededError(error) && !embeddingContextExceededError(error))
-        input.signal?.throwIfAborted();
-      collect((error as { usage?: LlmUsage } | null)?.usage);
-      return failedRun(toRunError(error, 'COORDINATOR_REPORT_FAILED'));
+      const failure =
+        runInterruption(input.signal, [error], 'throw-signal-abort') ??
+        toRunError(error, 'COORDINATOR_REPORT_FAILED');
+      collect(errorUsage(error).usage);
+      return failedRun(failure);
     }
   };
 
@@ -197,9 +200,9 @@ export async function runAdaptivePlan(
     };
 
     const failStep = <T>(error: T, fallbackCode: string): AdaptiveRunResult => {
-      if (!contextExceededError(error) && !embeddingContextExceededError(error))
-        input.signal?.throwIfAborted();
-      const failure = toRunError(error, fallbackCode);
+      const failure =
+        runInterruption(input.signal, [error], 'throw-signal-abort') ??
+        toRunError(error, fallbackCode);
       record.status = 'failed';
       record.output = '';
       record.error = failure.message;
@@ -207,17 +210,16 @@ export async function runAdaptivePlan(
       return failedRun(
         Object.assign(
           new OrchestratorError(failure.message, failure.code, {
-            cause: error,
+            cause: failure.code === 'ABORTED' ? failure : error,
             status:
               httpStatusOf(failure) ??
               (typeof error === 'object' && error !== null
                 ? httpStatusOf(error)
                 : undefined),
           }),
-          {
-            stepId: step.id,
-            usageCalls: errorUsage(error).usageCalls ?? failure.usageCalls,
-          },
+          errorUsage(failure),
+          errorUsage(error),
+          { stepId: step.id },
         ),
       );
     };
@@ -255,7 +257,7 @@ export async function runAdaptivePlan(
           record.verdict = checked.verdict;
           record.output = JSON.stringify(checked.verdict);
         } catch (error) {
-          collect((error as { usage?: LlmUsage } | null)?.usage);
+          collect(errorUsage(error).usage);
           return failStep(error, 'COORDINATOR_CHECK_FAILED');
         }
       } else {
@@ -298,17 +300,19 @@ export async function runAdaptivePlan(
             externalResults: input.externalResults,
             onPartial,
           });
-          reportedUsage = worked.usage;
+          const failed = errorUsage(worked.error);
+          reportedUsage = worked.usage ?? failed.usage;
           collect(reportedUsage);
           if (reportedUsage)
             workerUsage.push({
               worker: step.worker,
               usage: reportedUsage,
-              model:
-                worked.model ??
-                (typeof worked.metadata?.model === 'string'
-                  ? worked.metadata.model
-                  : worker.model),
+              model: worked.usage
+                ? (worked.model ??
+                  (typeof worked.metadata?.model === 'string'
+                    ? worked.metadata.model
+                    : worker.model))
+                : failed.model,
             });
           if (worked.errorClass === 'epicfail') {
             const failure = new AdaptiveEpicFailError(
@@ -319,6 +323,7 @@ export async function runAdaptivePlan(
               worked.epicFailTrace,
               step.id,
               worked.error,
+              input.signal,
             );
             record.status = 'failed';
             record.error = worked.error ? failure.message : 'epicfail';
@@ -348,8 +353,8 @@ export async function runAdaptivePlan(
             );
           }
         } catch (error) {
-          const failed = error as { usage?: LlmUsage; model?: string } | null;
-          if (!reportedUsage && failed?.usage) {
+          const failed = errorUsage(error);
+          if (!reportedUsage && failed.usage) {
             collect(failed.usage);
             workerUsage.push({
               worker: step.worker,
@@ -416,7 +421,7 @@ export async function runAdaptivePlan(
         if (!validated.ok) throw new Error(validated.error);
         plan.steps = [...plan.steps.slice(0, cursor + 1), ...validated.value];
       } catch (error) {
-        collect((error as { usage?: LlmUsage } | null)?.usage);
+        collect(errorUsage(error).usage);
         return failStep(error, 'COORDINATOR_REVISE_FAILED');
       }
       finish();

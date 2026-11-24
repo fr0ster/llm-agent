@@ -1,8 +1,17 @@
-import type { SmartAgentError } from '@mcp-abap-adt/llm-agent';
-import { originalUsageError } from '../logger/llm-call-usage.js';
+import {
+  contextExceededError,
+  embeddingContextExceededError,
+  OrchestratorError,
+  SmartAgentError,
+} from '@mcp-abap-adt/llm-agent';
+import {
+  errorUsage,
+  originalUsageError,
+  withUsageAttribution,
+} from '../logger/llm-call-usage.js';
 
 /** Recognize a signal's reason through usage copies and cause wrappers. */
-export function isAbortReason<T>(error: T, signal?: AbortSignal): boolean {
+function isAbortReason<T>(error: T, signal?: AbortSignal): boolean {
   if (!signal?.aborted) return false;
   const suppliedReason = signal.reason;
   const reason =
@@ -23,6 +32,55 @@ export function isAbortReason<T>(error: T, signal?: AbortSignal): boolean {
     current = cause;
   }
   return false;
+}
+
+/** Recognize cancellation before inspecting causes for independent overflows. */
+export function runInterruption<T>(
+  signal: AbortSignal | undefined,
+  errors: readonly T[] = [],
+  mode?: 'throw-signal-abort',
+): SmartAgentError | undefined {
+  let aborted: SmartAgentError | undefined;
+  let rethrow: (() => never) | undefined;
+  for (const error of errors) {
+    if (isAbortReason(error, signal)) {
+      aborted ??= abortRunError(signal?.reason, error);
+      rethrow ??= () => {
+        throw error;
+      };
+    } else if (error instanceof SmartAgentError && error.code === 'ABORTED') {
+      aborted ??= error;
+    } else if (error instanceof Error && error.name === 'AbortError') {
+      aborted ??= abortRunError(error, error);
+    } else {
+      const overflow =
+        contextExceededError(error) ?? embeddingContextExceededError(error);
+      if (overflow) return overflow;
+    }
+  }
+  if (mode === 'throw-signal-abort' && signal?.aborted) {
+    if (rethrow) rethrow();
+    signal.throwIfAborted();
+  }
+  return (
+    aborted ?? (signal?.aborted ? abortRunError(signal.reason) : undefined)
+  );
+}
+
+function abortRunError<T, U>(reason: T, error?: U): SmartAgentError {
+  if (reason instanceof SmartAgentError && reason.code === 'ABORTED')
+    return withUsageAttribution(reason, errorUsage(error));
+  const message =
+    typeof reason === 'object' &&
+    reason !== null &&
+    'message' in reason &&
+    typeof reason.message === 'string'
+      ? reason.message
+      : String(reason);
+  return withUsageAttribution(new OrchestratorError(message, 'ABORTED'), {
+    ...errorUsage(reason),
+    ...errorUsage(error),
+  });
 }
 
 /**

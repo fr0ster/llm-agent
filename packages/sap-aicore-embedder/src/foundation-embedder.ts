@@ -4,10 +4,10 @@ import {
   beginEmbeddingRequest,
   type CallOptions,
   embeddingErrorCode,
+  embeddingOverflowError,
   type IUsageRecorder,
   RagError,
   startOperation,
-  toEmbeddingError,
 } from '@mcp-abap-adt/llm-agent';
 import { decodeEmbedding } from './decode-embedding.js';
 import { resolveDeploymentId } from './deployments.js';
@@ -144,7 +144,7 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
           const text = await res.text().catch(() => '');
           throw new RagError(
             `SAP AI Core embeddings call failed: ${res.status} ${res.statusText} ${text}`,
-            embeddingErrorCode(res.status, text),
+            embeddingErrorCode(res.status, text, 'RAG_ERROR'),
             { status: res.status },
           );
         }
@@ -184,7 +184,7 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
         const text = await res.text().catch(() => '');
         throw new RagError(
           `SAP AI Core embeddings call failed: ${res.status} ${res.statusText} ${text}`,
-          embeddingErrorCode(res.status, text),
+          embeddingErrorCode(res.status, text, 'RAG_ERROR'),
           { status: res.status },
         );
       }
@@ -211,7 +211,7 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
         (error instanceof Error && error.name === 'AbortError')
       )
         throw error;
-      throw toEmbeddingError(error);
+      throw embeddingOverflowError(error) ?? error;
     }
   }
 

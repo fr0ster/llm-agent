@@ -4,12 +4,12 @@ import {
   type CallOptions,
   composeResilientEmbedder,
   embeddingErrorCode,
+  embeddingOverflowError,
   type IUsageRecorder,
   parseRetryAfter,
   RagError,
   startOperation,
   symmetricEmbedder,
-  toEmbeddingError,
   VectorRag,
   type VectorRagConfig,
   withProviderAttempt,
@@ -221,7 +221,7 @@ export class OllamaEmbedder implements IEmbedderBatch {
         (err instanceof Error && err.name === 'AbortError')
       )
         throw err;
-      throw toEmbeddingError(err);
+      throw embeddingOverflowError(err) ?? err;
     }
   }
 }

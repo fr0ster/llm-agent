@@ -27,8 +27,6 @@
  */
 
 import {
-  contextExceededError,
-  embeddingContextExceededError,
   McpError,
   OrchestratorError,
   type SmartAgentError,
@@ -37,31 +35,11 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import { normalizeMaxIterations } from '../config/normalize-max-iterations.js';
 import type { ISpan, ITracer } from '../tracer/types.js';
-import { isAbortReason } from '../utils/with-abort.js';
+import { runInterruption } from '../utils/with-abort.js';
 import { evaluateCondition } from './condition-evaluator.js';
 import type { PipelineContext } from './context.js';
 import type { StageHandlerRegistry } from './handlers/index.js';
 import type { StageDefinition } from './types.js';
-
-function abortError(
-  signal: AbortSignal,
-  failure?: SmartAgentError,
-): SmartAgentError {
-  if (failure?.code === 'ABORTED') return failure;
-  const reason = toRunError(signal.reason, 'ABORTED');
-  // A coded abort reason is supplied by the caller and cannot classify the stage failure.
-  return reason.code === 'ABORTED'
-    ? reason
-    : new OrchestratorError(reason.message, 'ABORTED');
-}
-
-function stageOverflow<T>(
-  error: T,
-  signal: AbortSignal | undefined,
-): SmartAgentError | undefined {
-  if (isAbortReason(error, signal)) return undefined;
-  return contextExceededError(error) ?? embeddingContextExceededError(error);
-}
 
 export class PipelineExecutor {
   constructor(
@@ -86,7 +64,7 @@ export class PipelineExecutor {
       if (ctx.error) return false;
       const signal = ctx.options?.signal;
       if (signal?.aborted) {
-        ctx.error = abortError(signal);
+        ctx.error = runInterruption(signal);
         return false;
       }
 
@@ -124,16 +102,16 @@ export class PipelineExecutor {
       } catch (err) {
         span.setStatus('error', String(err));
         span.end();
-        const failure =
-          terminalRunError(err) ?? (err instanceof McpError ? err : undefined);
-        const overflow =
-          stageOverflow(err, signal) ?? stageOverflow(ctx.error, signal);
-        const priorityError =
-          overflow ??
-          (signal?.aborted ? abortError(signal, ctx.error) : undefined);
-        if (priorityError) ctx.error = priorityError;
-        else ctx.error ??= failure ?? toRunError(err, 'PIPELINE_STAGE_FAILED');
-        const reported = priorityError ?? failure;
+        const priorityError = runInterruption(signal, [err, ctx.error]);
+        const reported =
+          priorityError ??
+          terminalRunError(err) ??
+          (err instanceof McpError ? err : undefined);
+        ctx.error =
+          priorityError ??
+          ctx.error ??
+          reported ??
+          toRunError(err, 'PIPELINE_STAGE_FAILED');
         if (reported) ctx.yield({ ok: false, error: reported });
         ctx.options?.sessionLogger?.logStep(`stage_error_${stage.id}`, {
           error: String(err),
@@ -147,8 +125,7 @@ export class PipelineExecutor {
       });
       if (!ok) {
         if (signal?.aborted) {
-          ctx.error =
-            stageOverflow(ctx.error, signal) ?? abortError(signal, ctx.error);
+          ctx.error = runInterruption(signal, [ctx.error]);
         } else {
           ctx.error ??= new OrchestratorError(
             `Pipeline stage "${stage.id}" failed.`,
@@ -187,9 +164,9 @@ export class PipelineExecutor {
       };
       const yieldChunk: PipelineContext['yield'] = (chunk) => {
         if (!chunk.ok) {
-          if (isAbortReason(chunk.error, signal)) return;
-          const failure = stageOverflow(chunk.error, signal);
-          if (failure) stop(failure);
+          const failure = runInterruption(signal, [chunk.error]);
+          if (failure?.code === 'ABORTED' && signal?.aborted) return;
+          if (failure && failure.code !== 'ABORTED') stop(failure);
         }
         if (!overflow) ctx.yield(chunk);
       };
@@ -201,8 +178,8 @@ export class PipelineExecutor {
         },
         set(target, key, value, receiver) {
           if (key === 'error') {
-            const failure = stageOverflow(value, signal);
-            if (failure) stop(failure);
+            const failure = runInterruption(signal, [value]);
+            if (failure && failure.code !== 'ABORTED') stop(failure);
             if (overflow) return Reflect.set(target, key, overflow, receiver);
             if (target.error) return true;
           }

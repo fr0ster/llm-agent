@@ -41,15 +41,18 @@ describe('OpenAiEmbedder — constructor', () => {
   });
 });
 
-for (const message of [
-  'context length must be a positive integer',
-  'This model does not support the context window parameter',
-  'maximum context length must be a positive integer',
-  'This model does not support the maximum context length parameter',
-]) {
-  test(`OpenAI preserves the parameter error: ${message}`, async (t) => {
+for (const [status, message] of [
+  [400, 'context length must be a positive integer'],
+  [400, 'This model does not support the context window parameter'],
+  [400, 'maximum context length must be a positive integer'],
+  [400, 'This model does not support the maximum context length parameter'],
+  [401, 'Invalid API key'],
+  [429, 'Rate limited'],
+  [500, 'Upstream rejected request'],
+] as const) {
+  test(`OpenAI preserves EMBED_ERROR for HTTP ${status}: ${message}`, async (t) => {
     t.mock.method(globalThis, 'fetch', async () =>
-      Response.json({ error: { message } }, { status: 400 }),
+      Response.json({ error: { message } }, { status }),
     );
     const embedder = new OpenAiEmbedder({
       credential: staticApiKey('test'),
@@ -57,11 +60,11 @@ for (const message of [
     });
     await assert.rejects(embedder.embed('hello'), {
       code: 'EMBED_ERROR',
-      status: 400,
+      status,
     });
     await assert.rejects(embedder.embedBatch(['hello', 'world']), {
       code: 'EMBED_ERROR',
-      status: 400,
+      status,
     });
   });
 }
