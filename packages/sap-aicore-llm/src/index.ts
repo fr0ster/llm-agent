@@ -1,3 +1,7 @@
+export {
+  type SapAiCoreFoundationConfig,
+  SapAiCoreFoundationProvider,
+} from './sap-ai-core-foundation-provider.js';
 export type {
   SapCoreAICatalogModel,
   SapCoreAIConfig,

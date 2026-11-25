@@ -109,6 +109,23 @@ describe('config validation — fail loud, human-readable', () => {
     );
   });
 
+  it('resolves foundation provider settings in flat and named roles', () => {
+    const foundation = {
+      provider: 'sap-aicore-foundation',
+      model: 'anthropic--claude-4.6-sonnet',
+      resourceGroup: 'hub',
+      maxTokens: 300,
+      promptCaching: false,
+    };
+    const flat = resolveSmartServerConfig({}, base(foundation), {});
+    assert.equal(flat.llm?.provider, foundation.provider);
+    assert.equal(flat.llm?.resourceGroup, foundation.resourceGroup);
+    assert.equal(flat.llm?.maxTokens, foundation.maxTokens);
+
+    const named = resolveSmartServerConfig({}, base({ main: foundation }), {});
+    assert.deepEqual(named.llm?.main, foundation);
+  });
+
   it('mcp.type: http requires mcp.url', () => {
     assert.throws(
       () =>

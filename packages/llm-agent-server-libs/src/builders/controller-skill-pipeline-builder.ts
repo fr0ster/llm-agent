@@ -11,11 +11,12 @@ import type {
 import { buildAgent } from '../smart-agent/smart-server.js';
 
 export interface BuilderLlmInput {
-  provider: 'sap-ai-sdk' | 'openai' | 'anthropic' | 'deepseek' | 'ollama';
+  provider: NonNullable<SmartServerLlmConfig['provider']>;
   model?: string;
   /** Names the account the composition root resolves; omit for its default. */
   credentialRef?: string;
   url?: string;
+  resourceGroup?: string;
   temperature?: number;
   maxTokens?: number;
 }
@@ -46,6 +47,9 @@ function toLlmConfig(input: BuilderLlmInput): SmartServerLlmConfig {
       : {}),
     ...(input.model !== undefined ? { model: input.model } : {}),
     ...(input.url !== undefined ? { url: input.url } : {}),
+    ...(input.resourceGroup !== undefined
+      ? { resourceGroup: input.resourceGroup }
+      : {}),
     ...(input.temperature !== undefined
       ? { temperature: input.temperature }
       : {}),

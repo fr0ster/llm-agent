@@ -15,6 +15,7 @@ const VALID_PROVIDERS = [
   'deepseek',
   'sap-ai-sdk',
   'ollama',
+  'sap-aicore-foundation',
 ] as const;
 
 const VALID_RAG_TYPES = [
@@ -267,7 +268,7 @@ function checkLlmRole(
   const provider = role?.provider as string | undefined;
   if (!provider) {
     issues.push(
-      `${label}.provider: required (one of: openai, anthropic, deepseek, sap-ai-sdk, ollama)`,
+      `${label}.provider: required (one of: ${VALID_PROVIDERS.join(', ')})`,
     );
     return;
   }
@@ -275,7 +276,7 @@ function checkLlmRole(
   // string; do not "simplify" — it preserves the const-tuple narrowing.
   if (!(VALID_PROVIDERS as readonly string[]).includes(provider)) {
     issues.push(
-      `${label}.provider: "${provider}" is invalid (one of: openai, anthropic, deepseek, sap-ai-sdk, ollama)`,
+      `${label}.provider: "${provider}" is invalid (one of: ${VALID_PROVIDERS.join(', ')})`,
     );
     return;
   }

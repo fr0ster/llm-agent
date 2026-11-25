@@ -10,6 +10,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./foundation": {
+      "types": "./dist/sap-ai-core-foundation-provider.d.ts",
+      "default": "./dist/sap-ai-core-foundation-provider.js"
     }
   },
   "files": [
@@ -24,8 +28,13 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
+    "@mcp-abap-adt/anthropic-llm": "^31.1.1",
+    "@mcp-abap-adt/openai-llm": "^30.14.1",
     "@sap-ai-sdk/ai-api": "^2.18.0",
     "@sap-ai-sdk/orchestration": "^2.18.0"
+  },
+  "devDependencies": {
+    "@mcp-abap-adt/sap-aicore-auth": "^30.9.2"
   },
   "license": "LGPL-3.0-only",
   "repository": {

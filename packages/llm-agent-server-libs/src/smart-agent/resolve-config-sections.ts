@@ -37,13 +37,11 @@ export function resolveLlmSection(yaml: YamlConfig): SmartServerConfig['llm'] {
   return get(yaml, 'llm')
     ? typeof get(yaml, 'llm', 'provider') === 'string'
       ? {
-          provider: get(yaml, 'llm', 'provider') as
-            | 'deepseek'
-            | 'openai'
-            | 'anthropic'
-            | 'sap-ai-sdk'
-            | 'ollama'
-            | undefined,
+          provider: get(
+            yaml,
+            'llm',
+            'provider',
+          ) as SmartServerLlmConfig['provider'],
           // A name the composition root resolves — never a value. Its shape is
           // checked by the validator, which reads the raw YAML.
           ...(typeof get(yaml, 'llm', 'credentialRef') === 'string'
