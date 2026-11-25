@@ -25,6 +25,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { terminalRunError } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
+import type { SubAgentDispatchContext } from '../../coordinator/dispatch/subagent.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -60,7 +61,9 @@ export class CoordinatorHandler implements IStageHandler {
       return false;
     }
 
-    const coordCtx: ICoordinatorContext = {
+    const selectedTools = ctx.activeTools ?? ctx.selectedTools;
+    const retrievedToolNames = ctx.retrievedToolNames;
+    const coordCtx: SubAgentDispatchContext = {
       caller: ctx.options.caller,
       inputText: ctx.inputText,
       systemPrompt: collectSystemPrompt(ctx),
@@ -76,9 +79,12 @@ export class CoordinatorHandler implements IStageHandler {
         maxToolCalls: ctx.config.maxToolCalls,
       },
       onToolCallCount: ctx.options?.onToolCallCount,
-      // #157: thread the per-request RAG-selected tools + an MCP executor so a
+      // #157: thread the per-request selected tools + an MCP executor so a
       // self-dispatched step runs a real tool-loop instead of a toolless chat.
-      selectedTools: ctx.activeTools ?? ctx.selectedTools,
+      selectedTools,
+      retrievedTools: retrievedToolNames
+        ? selectedTools?.filter(({ name }) => retrievedToolNames.has(name))
+        : undefined,
       callTool: buildCallTool(ctx),
     };
 

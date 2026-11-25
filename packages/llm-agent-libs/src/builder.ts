@@ -604,7 +604,7 @@ export class SmartAgentBuilder {
     return this;
   }
 
-  /** Exclude the named stores from the pipeline's RAG stages and fallback searches. */
+  /** Exclude the named stores from pipeline retrieval and built-in coordinator context. */
   withSkippedRagStores(...names: string[]): this {
     for (const name of names) this._skippedRagStores.add(name);
     return this;
@@ -1537,26 +1537,23 @@ export class SmartAgentBuilder {
             'withCoordinator: requires either cfg.plannerLlm or withMainLlm() to be called',
           );
         }
-        // Construct a default context builder from this builder's available RAG
-        // + embedder resources. `toolSource` comes from the toolsRag the parent
-        // already uses for tool-loop retrieval. `projectSource` is left unset
-        // until a dedicated project/domain RAG slot is exposed on the builder.
-        // Like DefaultPipeline: this agent's OWN tools store keeps priority,
-        // with its explicit strategy applied; a projected `tools` entry is used
-        // only when it decorates that own store (never another agent's).
-        const toolsStrategy = this._retrievalStrategies.get('tools');
-        const ownTools =
-          toolsRag && applyRetrievalStrategy(toolsRag, toolsStrategy);
-        const toolSource = this.buildRetrievalSource(
-          toolsRag,
-          this._embedder,
-          () =>
-            ownBuiltInStore(
-              toolsRag as IRag,
-              ownTools as IRag,
-              ragStores.tools?.rag,
-            ),
-        );
+        const useRetrievedTools = this._toolRetriever !== undefined;
+        let toolSource: SubAgentRetrievalSource | undefined;
+        if (
+          !useRetrievedTools &&
+          !this._skippedRagStores.has('tools') &&
+          toolsRag
+        ) {
+          // Preserve the agent's own tools store and strategy when resolving
+          // a matching decoration from the live registry projection.
+          const ownTools = applyRetrievalStrategy(
+            toolsRag,
+            this._retrievalStrategies.get('tools'),
+          );
+          toolSource = this.buildRetrievalSource(toolsRag, this._embedder, () =>
+            ownBuiltInStore(toolsRag, ownTools, ragStores.tools?.rag),
+          );
+        }
         const defaultContextBuilder = new DefaultSubAgentContextBuilder({
           toolSource,
         });
@@ -1567,7 +1564,7 @@ export class SmartAgentBuilder {
           dispatch:
             this._coordinator.dispatch ??
             new HybridDispatch(
-              new SubAgentDispatch(defaultContextBuilder),
+              new SubAgentDispatch(defaultContextBuilder, useRetrievedTools),
               new SelfDispatch(
                 plannerLlm,
                 undefined,

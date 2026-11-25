@@ -141,6 +141,118 @@ test('one selector model selects tools and skills without catalogue RAG while hi
   }
 });
 
+for (const retrieval of ['llm', 'default'] as const) {
+  test(`the coordinator honors skipped catalogues for a delegated worker with ${retrieval} retrieval`, async () => {
+    const useLlmRetrievers = retrieval === 'llm';
+    const toolsRag = makeRag([
+      {
+        text: 'Stale catalogue entry',
+        metadata: { id: 'tool:read' },
+        score: 1,
+      },
+    ]);
+    const skillsRag = makeRag();
+    const historyRag = makeRag();
+    const knowledgeRag = makeRag();
+    const selection = makeLlm([
+      { content: '{"skills":["review"]}', finishReason: 'stop' },
+      { content: '{"tools":["read"]}', finishReason: 'stop' },
+    ]);
+    const workerContexts: (string | undefined)[] = [];
+    const builder = new SmartAgentBuilder({ skipModelValidation: true })
+      .withRagAccess(testRequestAccess)
+      .withMainLlm(makeLlm([]))
+      .withClassifier(makeClassifier([{ type: 'action', text }]))
+      .withMcpClients([
+        makeMcpClient([
+          ...tools,
+          { name: 'write', description: 'Write a record', inputSchema: {} },
+        ]),
+      ])
+      .withEmbedder({
+        async embedQuery() {
+          return { vector: [1, 0] };
+        },
+      })
+      .setToolsRag(toolsRag)
+      .setHistoryRag(historyRag)
+      .addRagCollection({
+        name: 'skills',
+        rag: skillsRag,
+        meta: { displayName: 'Skill catalogue', scope: 'global' },
+      })
+      .addRagCollection({
+        name: 'knowledge',
+        rag: knowledgeRag,
+        meta: { displayName: 'Knowledge', scope: 'global' },
+      })
+      .withSkillManager(skillManager(), { vectorize: false })
+      .withSkippedRagStores('tools', 'skills')
+      .withSubAgent('worker', {
+        name: 'worker',
+        capabilities: { contextPolicy: 'optional' },
+        async run({ context }) {
+          workerContexts.push(context);
+          return { output: 'Reviewed' };
+        },
+      })
+      .withCoordinator({
+        planning: {
+          name: 'manual',
+          async buildInitialPlan(ctx) {
+            assert.equal(
+              ctx.skillContent,
+              useLlmRetrievers
+                ? '### Skill: review\nInstructions for review'
+                : undefined,
+            );
+            return {
+              source: 'manual',
+              createdAt: 0,
+              steps: [
+                { id: 's1', goal: text, agent: 'worker', status: 'pending' },
+              ],
+            };
+          },
+          shouldReplan: () => false,
+          rebuildPlan: () => assert.fail('unexpected replan'),
+        },
+      });
+    if (useLlmRetrievers) {
+      builder
+        .withToolRetriever(new LlmToolRetriever(selection))
+        .withSkillRetriever(new LlmSkillRetriever(selection));
+    }
+    const handle = await builder.build().then(unwrapBuilderResult);
+    try {
+      const result = await handle.agent.process(text, testCallOptions());
+      assert.ok(result.ok, result.ok ? undefined : result.error.message);
+      // Default selection also searches the eligible stores for tool and skill matches.
+      const expectedOtherQueries = useLlmRetrievers ? 1 : 3;
+      assert.deepEqual(
+        {
+          tools: toolsRag.queryCount,
+          skills: skillsRag.queryCount,
+          history: historyRag.queryCount,
+          knowledge: knowledgeRag.queryCount,
+        },
+        {
+          tools: 0,
+          skills: 0,
+          history: expectedOtherQueries,
+          knowledge: expectedOtherQueries,
+        },
+      );
+      assert.equal(selection.callCount, useLlmRetrievers ? 2 : 0);
+      assert.deepEqual(workerContexts, [
+        useLlmRetrievers ? 'read: Read a record' : undefined,
+      ]);
+    } finally {
+      await handle.close();
+    }
+  });
+}
+
 test('skipped RAG stores stay out of the default selectors’ fallback searches', async () => {
   const toolsRag = makeRag();
   const skillsRag = makeRag();
