@@ -34,6 +34,44 @@ const provider = new SapCoreAIProvider({
 including each retry attempt — never cached on the provider instance, so a
 rotating token keeps rotating.
 
+## Foundation deployments
+
+Use `sap-aicore-foundation` in `smart-server.yaml` to connect to running
+foundation-model deployments directly. Both SAP providers use a bearer
+credential and an AI Core API base URL from the same credential reference.
+
+```yaml
+llm:
+  provider: sap-aicore-foundation
+  model: anthropic--claude-4.6-sonnet
+  credentialRef: AICORE
+  resourceGroup: cloud-llm-hub
+  maxTokens: 4096
+```
+
+The foundation provider resolves each model in the configured resource group
+(default: default). A 404 invalidates the cached deployment and triggers a
+fresh lookup. Bedrock requires `maxTokens` for Anthropic models. Provide it in
+the LLM config or in the call options. Anthropic prompt caching defaults to
+enabled and uses explicit cache breakpoints. A call can override the
+provider's `promptCaching` setting. The OpenAI route uses the model's automatic
+cache and reports cache reads and writes when available.
+
+Import `SapAiCoreFoundationProvider` from
+`@mcp-abap-adt/sap-aicore-llm/foundation` for programmatic construction.
+For embeddings, configure the `sap-ai-core` embedder with `scenario: foundation-models`.
+
+After running the monorepo build, set `AICORE_SERVICE_KEY_PATH` to the path of
+a service-key JSON file, then run the manual streaming check from the repo root.
+
+```sh
+node packages/sap-aicore-llm/scripts/check-foundation-streams.mjs
+```
+
+The script uses cloud-llm-hub by default and accepts `LLM_AGENT_RESOURCE_GROUP`.
+It prints HTTP status codes and exits nonzero unless both streams produce
+text.
+
 ## Anthropic prompt caching
 
 `promptCaching?: boolean` enables or disables prompt caching for Anthropic Claude
@@ -114,7 +152,7 @@ Use the buffered recorder from `@mcp-abap-adt/llm-usage`, or supply your own
 injection, replaceable transports/sinks and delivery/loss semantics.
 
 
-SAP AI Core retries transient failures before the first response chunk once by default. This covers HTTP 500/502/503/504 and statusless JSON parsing errors, ECONNRESET, socket hang up and ETIMEDOUT. Configure `transientMaxRetries` (default `1`, `0` disables) and `transientRetryDelayMs` (default `1500`) on `SapCoreAIConfig`. Retry-After overrides the delay; waiting honours the abort signal. Aborts and failures after the first chunk are never retried. HTTP 429 continues through the existing throttle strategy. Every physical attempt has its own usage record, with increasing `providerAttempt` and `physicalSeq`.
+SAP AI Core orchestration retries transient failures before the first response chunk once by default. This covers HTTP 500/502/503/504 and statusless JSON parsing errors, ECONNRESET, socket hang up and ETIMEDOUT. Configure `transientMaxRetries` (default `1`, `0` disables) and `transientRetryDelayMs` (default `1500`) on `SapCoreAIConfig`. Retry-After overrides the delay; waiting honours the abort signal. Aborts and failures after the first chunk are never retried. HTTP 429 continues through the existing throttle strategy. Every physical attempt has its own usage record, with increasing `providerAttempt` and `physicalSeq`.
 
 ## Prompt caching
 

@@ -23,10 +23,20 @@ import {
   startOperation,
 } from '@mcp-abap-adt/llm-agent';
 import axios, { type AxiosInstance } from 'axios';
-
-interface OpenAIErrorResponse {
-  error?: { message?: string; code?: string | null };
-}
+import {
+  chatResponse,
+  formatMessages,
+  isContextOverflow,
+  type OpenAIChatEvent,
+  type OpenAIChatResponse,
+  type OpenAIErrorResponse,
+  OpenAIStreamMapper,
+  type OpenAIWireMessage,
+  requestBody,
+  streamParams,
+  tokenFacts,
+  tokenLimitParam,
+} from './chat-wire.js';
 
 interface OpenAIModel {
   id: string;
@@ -182,39 +192,18 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
       let shape: ReturnType<typeof requestShape> | undefined;
       const response = await this.withThrottleRetry(
         async (handle) => {
-          const response = await this.client.post(
+          const response = await this.client.post<OpenAIChatResponse>(
             '/chat/completions',
-            {
+            requestBody(
               model,
-              messages: sent,
-              tools: tools && tools.length > 0 ? tools : undefined,
-              tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
-              ...(temperature !== undefined ? { temperature } : {}),
-              ...(maxTokens !== undefined
-                ? this.getTokenLimitParam(model, maxTokens)
-                : {}),
-              ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
-              ...(options?.stop ? { stop: options.stop } : {}),
-            },
+              sent,
+              tools,
+              { ...options, temperature, maxTokens },
+              this.getTokenLimitParam.bind(this),
+            ),
             { signal: options?.signal, headers },
           );
-          const choice = response.data.choices[0];
-
-          const usage = response.data.usage
-            ? {
-                ...cacheUsage(response.data.usage),
-                promptTokens: response.data.usage.prompt_tokens,
-                completionTokens: response.data.usage.completion_tokens,
-                totalTokens: response.data.usage.total_tokens,
-              }
-            : undefined;
-
-          const result = {
-            content: choice.message.content || '',
-            finishReason: choice.finish_reason,
-            raw: response.data,
-            usage,
-          };
+          const result = chatResponse(response.data);
           handle.end({
             outcome: response.data.error ? 'error' : 'ok',
             ...tokenFacts(response.data.usage),
@@ -279,18 +268,14 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
           this.client.post(
             '/chat/completions',
             {
-              model,
-              messages: sent,
-              tools: tools && tools.length > 0 ? tools : undefined,
-              tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
-              ...(temperature !== undefined ? { temperature } : {}),
-              ...(maxTokens !== undefined
-                ? this.getTokenLimitParam(model, maxTokens)
-                : {}),
-              ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
-              ...(options?.stop ? { stop: options.stop } : {}),
-              stream: true,
-              stream_options: { include_usage: true },
+              ...requestBody(
+                model,
+                sent,
+                tools,
+                { ...options, temperature, maxTokens },
+                this.getTokenLimitParam.bind(this),
+              ),
+              ...streamParams(),
             },
             {
               responseType: 'stream',
@@ -325,7 +310,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
 
       const stream = response.data;
       let buffer = '';
-      const toolArgumentsReceived = new Map<number, boolean>();
+      const mapper = new OpenAIStreamMapper();
 
       for await (const chunk of stream) {
         buffer += chunk.toString();
@@ -340,79 +325,25 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
           if (data === '[DONE]') break;
 
           try {
-            const parsed = JSON.parse(data);
+            const parsed: OpenAIChatEvent = JSON.parse(data);
             if (parsed.error) {
               returnedError = true;
               const error: OpenAIErrorResponse['error'] = parsed.error;
-              if (error?.code === 'context_length_exceeded') {
+              if (error && isContextOverflow(error)) {
                 throw new LlmError(
                   options?.apiKey === undefined
-                    ? (error.message ?? error.code)
-                    : error.code,
+                    ? (error.message ?? 'context_length_exceeded')
+                    : 'context_length_exceeded',
                   MODEL_CONTEXT_EXCEEDED,
                 );
               }
             }
             if (parsed.usage) facts = { ...facts, ...tokenFacts(parsed.usage) };
-            const choice = parsed.choices?.[0];
-            if (choice?.delta) {
-              const deltaToolCalls = choice.delta.tool_calls as
-                | Array<{
-                    index: number;
-                    id?: string;
-                    function?: { name?: string; arguments?: string };
-                  }>
-                | undefined;
-              let toolCalls: LLMResponse['toolCalls'] = deltaToolCalls?.length
-                ? deltaToolCalls.map((tc) => ({
-                    index: tc.index,
-                    id: tc.id,
-                    name: tc.function?.name,
-                    arguments: tc.function?.arguments,
-                  }))
-                : undefined;
-              if (choice.delta.content || toolCalls?.length)
-                request.firstToken();
-              for (const { index, arguments: args } of toolCalls ?? []) {
-                toolArgumentsReceived.set(
-                  index,
-                  Boolean(args) || toolArgumentsReceived.get(index) === true,
-                );
-              }
-              if (choice.finish_reason === 'tool_calls') {
-                for (const [index, hasArguments] of toolArgumentsReceived) {
-                  if (!hasArguments) {
-                    toolCalls ??= [];
-                    toolCalls.push({ index, arguments: '{}' });
-                  }
-                }
-                toolArgumentsReceived.clear();
-              }
-              yield {
-                content: choice.delta.content || '',
-                finishReason: choice.finish_reason,
-                raw: parsed,
-                ...(toolCalls ? { toolCalls } : {}),
-              };
-            }
-            // Usage chunk. OpenAI emits it as a separate chunk with empty
-            // `choices`, but DeepSeek (and some other OpenAI-compatible APIs)
-            // attaches `usage` to the FINAL delta chunk that ALSO carries
-            // `finish_reason:"stop"` (with empty `delta.content`). Cover both
-            // by yielding a usage chunk whenever `parsed.usage` is present —
-            // independent of whether the same payload also produced a delta
-            // yield above.
-            if (parsed.usage) {
-              yield {
-                content: '',
-                raw: parsed,
-                usage: {
-                  ...cacheUsage(parsed.usage),
-                  promptTokens: parsed.usage.prompt_tokens,
-                  completionTokens: parsed.usage.completion_tokens,
-                  totalTokens: parsed.usage.total_tokens,
-                },
-              };
+            const delta = parsed.choices?.[0]?.delta;
+            if (delta?.content || delta?.tool_calls?.length)
+              request.firstToken();
+            for (const mapped of mapper.map(parsed)) {
+              yield mapped;
             }
           } catch (error) {
             if (
@@ -477,7 +408,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
       body instanceof Readable ? streamedBody?.error : body?.error;
     const overflow =
       (transport?.response?.status === 400 &&
-        providerError?.code === 'context_length_exceeded') ||
+        isContextOverflow(providerError)) ||
       (error instanceof LlmError && error.code === MODEL_CONTEXT_EXCEEDED);
     const providerMessage =
       body instanceof Readable && !overflow
@@ -531,102 +462,18 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
 
   /**
    * Return the appropriate token limit parameter for the model.
-   * Newer models (o1, o3, gpt-5+) require max_completion_tokens;
-   * legacy models use max_tokens.
+   * Keep the direct provider's token limit selection for existing callers.
    */
   protected getTokenLimitParam(
     model: string,
     maxTokens: number,
   ): Record<string, number> {
-    const normalized = model.toLowerCase();
-    const needsCompletionTokens = /^(o[13]|gpt-5)/.test(normalized);
-    return needsCompletionTokens
-      ? { max_completion_tokens: maxTokens }
-      : { max_tokens: maxTokens };
+    return tokenLimitParam(model, maxTokens);
   }
 
-  /**
-   * Format messages for OpenAI API with strict protocol enforcement.
-   */
   protected formatMessages(messages: Message[]): OpenAIWireMessage[] {
-    const formatted: OpenAIWireMessage[] = [];
-
-    for (const msg of messages) {
-      if (msg.role === 'tool' && !msg.tool_call_id) {
-        continue;
-      }
-
-      const entry: OpenAIWireMessage = {
-        role: msg.role,
-        content: msg.content ?? '',
-      };
-
-      if (
-        msg.role === 'assistant' &&
-        msg.tool_calls &&
-        msg.tool_calls.length > 0
-      ) {
-        entry.tool_calls = msg.tool_calls;
-        entry.content = msg.content || null;
-      }
-
-      if (msg.role === 'tool') {
-        entry.tool_call_id = msg.tool_call_id;
-        entry.content =
-          typeof msg.content === 'string'
-            ? msg.content
-            : JSON.stringify(msg.content ?? '');
-      }
-
-      formatted.push(entry);
-    }
-
-    return formatted;
+    return formatMessages(messages);
   }
-}
-
-function cacheUsage(usage: {
-  prompt_tokens_details?: {
-    cached_tokens?: number;
-    cache_write_tokens?: number;
-  };
-  prompt_cache_hit_tokens?: number;
-}) {
-  const cached =
-    usage.prompt_tokens_details?.cached_tokens ?? usage.prompt_cache_hit_tokens;
-  const created = usage.prompt_tokens_details?.cache_write_tokens;
-  return {
-    ...(cached !== undefined ? { cachedInputTokens: cached } : {}),
-    ...(created !== undefined ? { cacheCreationInputTokens: created } : {}),
-  };
-}
-
-function tokenFacts(usage?: {
-  prompt_tokens?: number;
-  completion_tokens?: number;
-  prompt_tokens_details?: {
-    cached_tokens?: number;
-    cache_write_tokens?: number;
-  };
-  prompt_cache_hit_tokens?: number;
-}): Partial<LlmRequestFacts> {
-  return usage &&
-    (usage.prompt_tokens !== undefined ||
-      usage.completion_tokens !== undefined ||
-      usage.prompt_tokens_details?.cached_tokens !== undefined ||
-      usage.prompt_cache_hit_tokens !== undefined ||
-      usage.prompt_tokens_details?.cache_write_tokens !== undefined)
-    ? {
-        ...(usage.prompt_tokens !== undefined
-          ? { inputTokens: usage.prompt_tokens }
-          : {}),
-        ...(usage.completion_tokens !== undefined
-          ? { outputTokens: usage.completion_tokens }
-          : {}),
-        ...cacheUsage(usage),
-        tokensSource: 'provider',
-      }
-    : {};
 }
 
 function isAbortError(error: unknown): boolean {
@@ -637,10 +484,4 @@ function isAbortError(error: unknown): boolean {
   );
 }
 
-/** One message as the OpenAI chat completions payload carries it. */
-export interface OpenAIWireMessage {
-  role: Message['role'];
-  content: string | null;
-  tool_calls?: Message['tool_calls'];
-  tool_call_id?: string;
-}
+export type { OpenAIWireMessage } from './chat-wire.js';

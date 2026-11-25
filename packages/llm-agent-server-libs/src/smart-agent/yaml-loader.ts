@@ -17,7 +17,7 @@ mode: smart
 
 llm:
   # promptCaching: true             # default; false disables client-controlled caching
-  provider: deepseek                  # deepseek | openai | anthropic | sap-ai-sdk | ollama
+  provider: deepseek                  # deepseek | openai | anthropic | sap-ai-sdk | sap-aicore-foundation | ollama
   # No secret here: your composition root holds the credential. To use an account
   # other than its default, name it:  credentialRef: <NAME>
   model: deepseek-chat
@@ -85,7 +85,7 @@ agent:
 # (The legacy pipeline.llm override was removed — use the top-level llm: map now.)
 # llm:
 #   main:
-#     provider: deepseek              # deepseek | openai | anthropic | sap-ai-sdk
+#     provider: deepseek              # deepseek | openai | anthropic | sap-ai-sdk | sap-aicore-foundation
 #     model: deepseek-chat
 #     temperature: 0.7
 #   classifier:                       # optional; if absent, main config is reused

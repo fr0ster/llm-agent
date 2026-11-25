@@ -28,6 +28,7 @@ import {
 import { SapAiCoreEmbedder } from '@mcp-abap-adt/sap-aicore-embedder';
 import {
   buildDestination,
+  SapAiCoreFoundationProvider,
   SapCoreAIProvider,
 } from '@mcp-abap-adt/sap-aicore-llm';
 import { configDotenv } from 'dotenv';
@@ -188,6 +189,7 @@ interface IModelToCheck {
   /** The role's resource group, or AI Core's 'default' when it names none. */
   resourceGroup: string;
   scenario: 'orchestration' | 'foundation-models';
+  chatProvider?: 'sap-aicore-foundation';
   /** Config roles this row answers for (config mode only). */
   roles: string[];
   /** The role's sampling knobs, sent exactly as the server sends them. */
@@ -232,10 +234,11 @@ async function fromConfig(configPath: string): Promise<IModelToCheck[]> {
     scenario: IModelToCheck['scenario'],
     knobs: IModelToCheck['knobs'] = {},
     inputType?: IModelToCheck['inputType'],
+    chatProvider?: IModelToCheck['chatProvider'],
   ) => {
     if (!requestedModes.includes(mode)) return;
     // Roles share a row only when the server would send the same request.
-    const key = `${model}|${ref}|${group}|${scenario}|${knobs.temperature}|${knobs.maxTokens}|${inputType}`;
+    const key = `${model}|${ref}|${group}|${scenario}|${knobs.temperature}|${knobs.maxTokens}|${inputType}|${chatProvider}`;
     const row = rows.get(key) ?? {
       model,
       probes: [],
@@ -244,6 +247,7 @@ async function fromConfig(configPath: string): Promise<IModelToCheck[]> {
       scenario,
       roles: [],
       knobs,
+      ...(chatProvider ? { chatProvider } : {}),
       ...(inputType ? { inputType } : {}),
     };
     if (!row.probes.some((p) => p.mode === mode)) {
@@ -256,7 +260,10 @@ async function fromConfig(configPath: string): Promise<IModelToCheck[]> {
   const skipped: string[] = [];
   for (const { role, cfg: entry } of await roleLlmConfigs(cfg.llm)) {
     if (!entry.model) continue;
-    if (entry.provider !== 'sap-ai-sdk') {
+    if (
+      entry.provider !== 'sap-ai-sdk' &&
+      entry.provider !== 'sap-aicore-foundation'
+    ) {
       skipped.push(`llm.${role} (${entry.provider ?? 'no provider'})`);
       continue;
     }
@@ -275,6 +282,8 @@ async function fromConfig(configPath: string): Promise<IModelToCheck[]> {
           ? { maxTokens: entry.maxTokens }
           : {}),
       },
+      undefined,
+      entry.provider === 'sap-aicore-foundation' ? entry.provider : undefined,
     );
   }
   const embedder = cfg.rag?.embedder;
@@ -345,7 +354,11 @@ type CheckResult = { ok: boolean; detail: string; ms: number };
 async function probeChat(row: IModelToCheck): Promise<CheckResult> {
   const start = Date.now();
   try {
-    const llm = new SapCoreAIProvider({
+    const Provider =
+      row.chatProvider === 'sap-aicore-foundation'
+        ? SapAiCoreFoundationProvider
+        : SapCoreAIProvider;
+    const llm = new Provider({
       model: row.model,
       credential: row.account.credential,
       apiBaseUrl: row.account.apiBaseUrl,

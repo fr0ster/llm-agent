@@ -74,6 +74,7 @@ interface ProviderThrottleOptions {
   model?: string;
   signal?: AbortSignal;
   onRetry?: ThrottleRetryOptions['onRetry'];
+  retryImmediately?: ThrottleRetryOptions['retryImmediately'];
   credentialFingerprint?: string;
 }
 
@@ -372,6 +373,7 @@ export abstract class BaseLLMProvider<
       retryAfterSeconds: (e: unknown) => this.retryAfterSeconds(e),
       signal: extra?.signal,
       onRetry: extra?.onRetry,
+      retryImmediately: extra?.retryImmediately,
       // Inside the throttle loop: every retry passes the shared gate again and
       // the call's throttle attempts and waited time carry over.
       transient: {

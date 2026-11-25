@@ -319,6 +319,8 @@ export interface ThrottleRetryOptions {
     delayMs: number;
     retryAfterSeconds?: number;
   }) => void;
+  /** Retry provider-specific recovery in the same throttle loop. */
+  retryImmediately?: (error: object | undefined) => boolean;
   /**
    * Transient failures (not a 429) retried inside the same loop, so each retry
    * passes the shared gate again and keeps this call's throttle counters.
@@ -477,6 +479,7 @@ async function attemptWithGate<T>(
         if ('code' in cause && cause.code === MODEL_CONTEXT_EXCEEDED)
           throw error;
       }
+      if (opts.retryImmediately?.(details)) continue;
       if (!opts.isThrottled(error)) {
         const transient = opts.transient;
         if (

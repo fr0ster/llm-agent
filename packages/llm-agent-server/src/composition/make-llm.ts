@@ -12,6 +12,7 @@ import type { SmartServerLlmConfig } from '@mcp-abap-adt/llm-agent-server-libs';
 import { type OllamaConfig, OllamaProvider } from '@mcp-abap-adt/ollama-llm';
 import { type OpenAIConfig, OpenAIProvider } from '@mcp-abap-adt/openai-llm';
 import type { SapCoreAIConfig } from '@mcp-abap-adt/sap-aicore-llm';
+import type { SapAiCoreFoundationConfig } from '@mcp-abap-adt/sap-aicore-llm/foundation';
 import { DEFAULT_LLM_REF } from './credential-for.js';
 import type { Lookup } from './lookup.js';
 
@@ -19,7 +20,7 @@ type ProviderInstance = LLMProvider & { readonly model: string };
 
 type SapCoreAICtor = new (cfg: SapCoreAIConfig) => ProviderInstance;
 
-/** The five constructors, injectable so a test records what each receives. */
+/** The provider constructors, injectable so a test records what each receives. */
 export interface LlmProviderCtors {
   openai: new (cfg: OpenAIConfig) => ProviderInstance;
   anthropic: new (cfg: AnthropicConfig) => ProviderInstance;
@@ -32,6 +33,11 @@ export interface LlmProviderCtors {
    * uncaught exceptions; loaded here, only one that selects `sap-ai-sdk` pays.
    */
   'sap-ai-sdk': () => Promise<SapCoreAICtor>;
+  'sap-aicore-foundation': () => Promise<
+    new (
+      cfg: SapAiCoreFoundationConfig,
+    ) => ProviderInstance
+  >;
 }
 
 export const SHIPPED_LLM_PROVIDERS: LlmProviderCtors = {
@@ -41,6 +47,9 @@ export const SHIPPED_LLM_PROVIDERS: LlmProviderCtors = {
   ollama: OllamaProvider,
   'sap-ai-sdk': async () =>
     (await import('@mcp-abap-adt/sap-aicore-llm')).SapCoreAIProvider,
+  'sap-aicore-foundation': async () =>
+    (await import('@mcp-abap-adt/sap-aicore-llm/foundation'))
+      .SapAiCoreFoundationProvider,
 };
 
 /**
@@ -70,9 +79,13 @@ export function createMakeLlm(
     // A knob only one provider understands is refused elsewhere, not dropped:
     // the config said something, and silently ignoring it runs against a
     // resource group nobody chose.
-    if (cfg.resourceGroup !== undefined && cfg.provider !== 'sap-ai-sdk') {
+    if (
+      cfg.resourceGroup !== undefined &&
+      cfg.provider !== 'sap-ai-sdk' &&
+      cfg.provider !== 'sap-aicore-foundation'
+    ) {
       throw new Error(
-        `llm resourceGroup applies to provider 'sap-ai-sdk' only, not '${String(cfg.provider)}'`,
+        `llm resourceGroup applies to SAP AI Core providers, got '${String(cfg.provider)}'`,
       );
     }
     const provider: ProviderInstance = await (async () => {
@@ -108,7 +121,8 @@ export function createMakeLlm(
               : entry.optional('api-key')),
           });
         case 'sap-ai-sdk':
-          return new (await ctors['sap-ai-sdk']())({
+        case 'sap-aicore-foundation':
+          return new (await ctors[cfg.provider]())({
             ...knobs,
             credential: entry.require('bearer'),
             apiBaseUrl: entry.requireApiBaseUrl(),

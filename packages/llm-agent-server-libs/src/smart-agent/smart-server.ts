@@ -163,7 +163,13 @@ export interface SmartServerLlmConfig {
   /** Default: true. Providers decide how to apply the switch. */
   promptCaching?: boolean;
   /** Provider id for the flat schema. Required when no pipeline.llm.main is set. */
-  provider?: 'deepseek' | 'openai' | 'anthropic' | 'sap-ai-sdk' | 'ollama';
+  provider?:
+    | 'deepseek'
+    | 'openai'
+    | 'anthropic'
+    | 'sap-ai-sdk'
+    | 'sap-aicore-foundation'
+    | 'ollama';
   /**
    * Names the account this role uses; the composition root resolves it to a
    * credential. Omit it and the root's default entry applies. Never a secret:
@@ -177,7 +183,7 @@ export interface SmartServerLlmConfig {
   maxTokens?: number;
   classifierTemperature?: number;
   /**
-   * SAP AI Core resource group (`provider: sap-ai-sdk` only). Unset, AI Core's
+   * SAP AI Core resource group for either SAP provider. Unset, AI Core's
    * `default` group applies; set on any other provider, startup fails rather
    * than dropping it.
    */

@@ -12,12 +12,21 @@ import { createMakeLlm, type LlmProviderCtors } from '../make-llm.js';
 
 const bearer: IBearerCredential = { kind: 'bearer', token: async () => 't' };
 
+type RecordedConfig = Omit<
+  ConstructorParameters<LlmProviderCtors['openai']>[0],
+  'credential'
+> & {
+  credential?: object;
+  apiBaseUrl?: string;
+  resourceGroup?: string;
+};
+
 function harness(entries: Record<string, CredentialEntry>) {
-  const seen: Array<{ provider: string; cfg: Record<string, unknown> }> = [];
+  const seen: Array<{ provider: string; cfg: RecordedConfig }> = [];
   const fake = (provider: string) =>
     class {
       readonly model: string;
-      constructor(cfg: Record<string, unknown>) {
+      constructor(cfg: RecordedConfig) {
         seen.push({ provider, cfg });
         this.model = String(cfg.model ?? 'unset');
       }
@@ -32,7 +41,8 @@ function harness(entries: Record<string, CredentialEntry>) {
     deepseek: fake('deepseek'),
     ollama: fake('ollama'),
     'sap-ai-sdk': async () => fake('sap-ai-sdk'),
-  } as unknown as LlmProviderCtors;
+    'sap-aicore-foundation': async () => fake('sap-aicore-foundation'),
+  } satisfies LlmProviderCtors;
   const makeLlm = createMakeLlm(
     createLookup(memoizeCredentials((r) => entries[r])),
     ctors,
@@ -143,13 +153,32 @@ describe('makeLlm — resourceGroup', () => {
     assert.equal('resourceGroup' in seen[1].cfg, false);
   });
 
+  it('uses the same bearer and address for a foundation deployment in the selected group', async () => {
+    const { seen, makeLlm } = harness({
+      FOUNDATION: { credential: bearer, apiBaseUrl: 'https://ai' },
+    });
+    const llm = await makeLlm({
+      provider: 'sap-aicore-foundation',
+      model: 'anthropic--claude-4.6-sonnet',
+      credentialRef: 'FOUNDATION',
+      resourceGroup: 'rg-2',
+      maxTokens: 77,
+    });
+    assert.equal(llm.model, 'anthropic--claude-4.6-sonnet');
+    assert.equal(seen[0]?.provider, 'sap-aicore-foundation');
+    assert.equal(seen[0]?.cfg.credential, bearer);
+    assert.equal(seen[0]?.cfg.apiBaseUrl, 'https://ai');
+    assert.equal(seen[0]?.cfg.resourceGroup, 'rg-2');
+    assert.equal(seen[0]?.cfg.maxTokens, 77);
+  });
+
   it('is refused on a provider that has no resource group', async () => {
     const { makeLlm } = harness({
       [DEFAULT_LLM_REF]: { credential: staticApiKey('k') },
     });
     await assert.rejects(
       makeLlm({ provider: 'openai', model: 'm', resourceGroup: 'rg-1' }),
-      /resourceGroup applies to provider 'sap-ai-sdk' only, not 'openai'/,
+      /resourceGroup applies to SAP AI Core providers, got 'openai'/,
     );
   });
 });
