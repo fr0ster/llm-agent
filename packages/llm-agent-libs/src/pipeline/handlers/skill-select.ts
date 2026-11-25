@@ -1,30 +1,28 @@
-import { denyRagAccess, ownerBoundQuery } from '../../rag/owner-bound-query.js';
 /**
- * SkillSelectHandler — selects skills based on RAG results and loads their content.
+ * SkillSelectHandler — selects skills from the skill manager and loads their content.
  *
- * Reads: `ctx.skillManager`, `ctx.ragResults.facts`, `ctx.config.mode`, `ctx.inputText`
+ * Reads: `ctx.skillManager`, `ctx.skillRetriever`, `ctx.ragResults`, `ctx.inputText`
  * Writes: `ctx.selectedSkills`, `ctx.skillContent`
  *
- * Uses RAG fact IDs with the `skill:` prefix to identify relevant skills.
- * Loads only semantically matched skills, including in hard mode.
+ * Uses the configured skill retriever, with semantic RAG matching by default.
  *
  * If no `ctx.skillManager` is configured, this handler is a no-op.
  */
 
 import {
-  collectWithContextOverflow,
   contextExceededError,
-  QueryEmbedding,
-  TextOnlyEmbedding,
+  type StageDefinition,
 } from '@mcp-abap-adt/llm-agent';
 import type { ISpan } from '../../tracer/types.js';
+import { retrievalError } from '../catalogue-retrieval/retrieval-error.js';
 import type { PipelineContext } from '../context.js';
+import { RagSkillRetriever } from '../skill-retrieval/rag-skill-retriever.js';
 import type { IStageHandler } from '../stage-handler.js';
 
 export class SkillSelectHandler implements IStageHandler {
   async execute(
     ctx: PipelineContext,
-    _config: Record<string, unknown>,
+    config: NonNullable<StageDefinition['config']>,
     span: ISpan,
   ): Promise<boolean> {
     if (!ctx.skillManager) {
@@ -32,61 +30,22 @@ export class SkillSelectHandler implements IStageHandler {
       return true;
     }
 
-    // Discover skills from all RAG results
-    const allRagResults = Object.values(ctx.ragResults).flat();
-    const ragSkillNames = new Set(
-      allRagResults
-        .map((r) => r.metadata.id as string)
-        .filter((id) => id?.startsWith('skill:'))
-        .map((id) => id.slice(6)),
-    );
-
-    // If no skill:* entries in RAG results, do a dedicated query on all stores.
-    if (ragSkillNames.size === 0) {
-      const k = (_config.k as number) ?? ctx.config.ragQueryK ?? 15;
-      const queryText = ctx.ragText || ctx.inputText;
-      const storeEntries = Object.entries(ctx.ragStores);
-      const embedding = ctx.embedder
-        ? new QueryEmbedding(queryText, ctx.embedder, ctx.options)
-        : new TextOnlyEmbedding(queryText);
-      const queries = await collectWithContextOverflow(
-        storeEntries.map(([, store]) =>
-          ownerBoundQuery(
-            store,
-            embedding,
-            k,
-            ctx.options ?? {},
-            ctx.ragAccess ?? denyRagAccess,
-          ),
-        ),
-        (result) => (result.ok ? undefined : result.error),
-        { rejectImmediately: true },
-      );
-      if (!queries.ok) {
-        ctx.error = queries.error;
-        return false;
-      }
-      for (const result of queries.value) {
-        if (!result.ok) {
-          ctx.error = result.error;
-          return false;
-        }
-        if (result.ok) {
-          for (const r of result.value) {
-            const id = r.metadata.id as string;
-            if (id?.startsWith('skill:')) {
-              ragSkillNames.add(id.slice(6));
-            }
-          }
-        }
-      }
-      if (ragSkillNames.size > 0) {
-        ctx.options?.sessionLogger?.logStep('skill_select_rag_fallback', {
-          query: queryText.slice(0, 200),
-          k,
-          matchedSkills: [...ragSkillNames],
-        });
-      }
+    const retriever = ctx.skillRetriever;
+    const ragMatches = retriever
+      ? undefined
+      : await new RagSkillRetriever({
+          ragStores: ctx.ragStores,
+          ragAccess: ctx.ragAccess,
+          embedder: ctx.embedder,
+          k: (config.k as number) ?? ctx.config.ragQueryK,
+        }).findMatches(
+          ctx.ragText || ctx.inputText,
+          ctx.ragResults,
+          ctx.options,
+        );
+    if (ragMatches && !ragMatches.ok) {
+      ctx.error = ragMatches.error;
+      return false;
     }
 
     const allSkillsResult = await ctx.skillManager.listSkills(ctx.options);
@@ -103,9 +62,34 @@ export class SkillSelectHandler implements IStageHandler {
     }
 
     const allSkills = allSkillsResult.value;
+    let selectedNames = ragMatches?.value;
+    if (retriever) {
+      const options = { ...ctx.options, requestLogger: ctx.requestLogger };
+      try {
+        const result = await retriever.retrieve(
+          {
+            text: ctx.inputText,
+            candidates: allSkills.map(({ name, description }) => ({
+              name,
+              description,
+            })),
+          },
+          options,
+        );
+        if (!result.ok) {
+          ctx.error = result.error;
+          return false;
+        }
+        selectedNames = new Set(result.value.names);
+      } catch (error) {
+        ctx.error = retrievalError(error, 'skill', options.signal);
+        return false;
+      }
+    }
 
-    // Informational skills are selected only by retrieval.
-    ctx.selectedSkills = allSkills.filter((s) => ragSkillNames.has(s.name));
+    ctx.selectedSkills = allSkills.filter((skill) =>
+      selectedNames?.has(skill.name),
+    );
 
     // Load content for selected skills
     const contentParts: string[] = [];
@@ -132,7 +116,8 @@ export class SkillSelectHandler implements IStageHandler {
 
     ctx.options?.sessionLogger?.logStep('skills_selected', {
       totalSkills: allSkills.length,
-      ragMatchedSkills: [...ragSkillNames],
+      ...(ragMatches && { ragMatchedSkills: [...ragMatches.value] }),
+      ...(retriever && { retriever: retriever.name }),
       selectedCount: ctx.selectedSkills.length,
       selectedNames: ctx.selectedSkills.map((s) => s.name),
     });

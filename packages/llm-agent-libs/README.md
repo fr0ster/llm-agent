@@ -78,6 +78,33 @@ constructs no LLM provider. See "Optional peer dependencies" below and docs/MIGR
 - `@mcp-abap-adt/llm-agent-libs/testing` — test helpers.
 - `@mcp-abap-adt/llm-agent-libs/otel` — OpenTelemetry tracer adapter.
 
+## Tool and skill selection
+
+RAG is the default for tool and skill selection. The following configuration
+uses the same selector model for both catalogues and excludes their dedicated
+RAG stores by key.
+
+```ts
+builder
+  .withToolRetriever(new LlmToolRetriever(selectorLlm))
+  .withSkillRetriever(new LlmSkillRetriever(selectorLlm))
+  .withSkippedRagStores('tools', 'skills');
+```
+
+The keys are the ones used in `ragStores`, including `user/<name>` or
+`session/<name>` for scoped collections. `withSkippedRagStores` adds keys to the
+exclusion list. `DefaultPipeline` also accepts `skippedRagStores` in its
+initialization dependencies. Excluded stores are omitted from pipeline RAG
+stages and their request-time store view, including fallback searches. They
+stay registered, and history and knowledge retrieval continue on their own keys.
+Use `withSkillManager(manager, { vectorize: false })` to skip startup skill
+indexing when the tools store is only used for catalogue search.
+
+`LlmSkillRetriever` uses the names and descriptions from the configured skill
+manager to select skills. The pipeline loads the selected skill bodies for the
+main model. `LlmToolRetriever` also supplies tool input schemas. Each selector
+call reports usage under its own role. A typed failure ends the stage directly.
+
 ## RAG access and collection owners (#304)
 
 Call `withRagAccess(access)` before `build()`, including for agents with no custom

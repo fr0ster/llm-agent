@@ -22,6 +22,7 @@ export const CATEGORY_MAP: Record<LlmComponent, TokenCategory> = {
   classifier: 'auxiliary',
   'tool-definer': 'auxiliary',
   'tool-retriever': 'auxiliary',
+  'skill-retriever': 'auxiliary',
   translate: 'auxiliary',
   'query-expander': 'auxiliary',
   helper: 'auxiliary',

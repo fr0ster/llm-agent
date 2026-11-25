@@ -3,11 +3,16 @@ import type {
   ICoordinatorContext,
   IDispatchStrategy,
   ISubAgentContextBuilder,
+  LlmTool,
   PlanStep,
   StepResult,
 } from '@mcp-abap-adt/llm-agent';
 import { terminalRunError } from '@mcp-abap-adt/llm-agent';
 import { composeTask } from './compose-task.js';
+
+export interface SubAgentDispatchContext extends ICoordinatorContext {
+  retrievedTools?: readonly LlmTool[];
+}
 
 /**
  * Dispatch the step to a named subagent from the registry.
@@ -21,11 +26,14 @@ import { composeTask } from './compose-task.js';
 export class SubAgentDispatch implements IDispatchStrategy {
   readonly name = 'subagent';
 
-  constructor(private readonly contextBuilder?: ISubAgentContextBuilder) {}
+  constructor(
+    private readonly contextBuilder?: ISubAgentContextBuilder,
+    private readonly useRetrievedTools = false,
+  ) {}
 
   async dispatch(
     step: PlanStep,
-    ctx: ICoordinatorContext,
+    ctx: SubAgentDispatchContext,
   ): Promise<StepResult> {
     const agentName = step.agent;
     if (!agentName) {
@@ -52,7 +60,14 @@ export class SubAgentDispatch implements IDispatchStrategy {
     const task = composeTask(step, ctx);
 
     let context: string | undefined;
-    if (this.contextBuilder) {
+    if (this.useRetrievedTools) {
+      if (sub.capabilities.contextPolicy !== 'forbidden') {
+        context =
+          ctx.retrievedTools
+            ?.map(({ name, description }) => `${name}: ${description}`)
+            .join('\n\n') || undefined;
+      }
+    } else if (this.contextBuilder) {
       const built = await this.contextBuilder.build({
         caller: ctx.caller,
         task,

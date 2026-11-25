@@ -162,6 +162,7 @@ export interface DefaultPipelineOptions {
 
 export class DefaultPipeline implements IPipeline {
   private deps!: PipelineDeps;
+  private skippedRagStores: ReadonlySet<string> = new Set();
   private ownStores: Partial<
     Record<'tools' | 'history', { raw: IRag; queried: IRag }>
   > = {};
@@ -199,6 +200,7 @@ export class DefaultPipeline implements IPipeline {
   initialize(deps: PipelineDeps): void {
     if (!deps.ragAccess) throw new Error('RagAccess configuration is required');
     this.deps = deps;
+    this.skippedRagStores = new Set(deps.skippedRagStores);
 
     // The agent's own built-in stores, each with its explicit strategy applied
     // once (idempotent when the store already carries one).
@@ -369,7 +371,10 @@ export class DefaultPipeline implements IPipeline {
    */
   private _buildStages(): StageDefinition[] {
     const enriched = this.deps.agentConfig?.enrichedToolSearch === true;
-    const hasToolsRag = !this.deps.toolRetriever && Boolean(this.deps.toolsRag);
+    const hasToolsRag =
+      !this.deps.toolRetriever &&
+      !this.skippedRagStores.has('tools') &&
+      Boolean(this.deps.toolsRag);
 
     const ragChildren: StageDefinition[] = [];
     // In enriched mode, the tools store is queried separately AFTER
@@ -381,7 +386,7 @@ export class DefaultPipeline implements IPipeline {
         config: { store: 'tools' },
       });
     }
-    if (this.deps.historyRag) {
+    if (this.deps.historyRag && !this.skippedRagStores.has('history')) {
       ragChildren.push({
         id: 'rag-history',
         type: 'rag-query',
@@ -392,7 +397,12 @@ export class DefaultPipeline implements IPipeline {
     // Custom stores — appended after built-in, same parallel block
     if (this.deps.ragStores) {
       for (const name of Object.keys(this.deps.ragStores)) {
-        if (name === 'tools' || name === 'history') continue;
+        if (
+          name === 'tools' ||
+          name === 'history' ||
+          this.skippedRagStores.has(name)
+        )
+          continue;
         ragChildren.push({
           id: `rag-${name}`,
           type: 'rag-query',
@@ -520,6 +530,7 @@ export class DefaultPipeline implements IPipeline {
         rag: ownBuiltInStore(own.raw, own.queried, projected[name]?.rag),
       };
     }
+    for (const name of this.skippedRagStores) delete ragStores[name];
 
     return {
       // Immutable input
@@ -580,6 +591,7 @@ export class DefaultPipeline implements IPipeline {
         };
       })(),
       skillManager: this.deps.skillManager,
+      skillRetriever: this.deps.skillRetriever,
       embedder: this.deps.embedder,
       toolSelectionStrategy: this.deps.toolSelectionStrategy,
       toolRetriever: this.deps.toolRetriever,

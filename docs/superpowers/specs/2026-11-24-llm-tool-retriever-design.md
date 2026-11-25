@@ -1,21 +1,22 @@
-# LLM tool retriever — design
+# LLM tool and skill retrievers — design
 
-Date: 2026-11-24. Status: draft for owner review.
+Date: 2026-11-24. Updated 2026-11-25 for skill retrieval.
 
 ## Goal
 
-Select MCP tools for a step without a RAG search. A cheap model reads the step text and the candidate tools (name, description, input schema) and returns the tools the step needs. The selector is one implementation of a tool-retrieval contract, so a consumer swaps RAG search for it by configuration.
+Select MCP tools and skills for a step without catalogue RAG searches. A cheap model reads the step text and each candidate catalogue and returns the names the step needs. The retrieval contracts let a consumer choose the selection strategy by configuration.
 
 ## Owner decisions
 
 - The model sees name, description and input schema of every candidate tool.
-- The LLM selector replaces RAG tool search; it is not layered on top of it. One strategy per configuration: `rag` or `llm`.
-- One failure policy for the whole system: a selector failure is a typed error to the caller. No silent fallback to RAG.
-- No caps: the model may return any number of tools. Better an extra tool than a missing one.
+- The model sees name and description of every skill returned by `ISkillManager.listSkills`.
+- Use `rag` for both catalogues by default. Use `llm` to replace both catalogue searches with the configured cheap model. History and knowledge stores remain eligible for RAG retrieval.
+- A selector failure ends the stage with a typed error and the usage of the failed call.
+- The selector can return any number of candidate names. Prefer including an extra relevant candidate over leaving one out.
 
-## Today
+## RAG baseline
 
-`ToolSelectHandler` (`packages/llm-agent-libs/src/pipeline/handlers/tool-select.ts`) lists MCP tools, embeds the query text, queries the RAG stores, keeps records whose id has the `tool:` prefix, and applies `IToolSelectionStrategy.select(results: RagResult[])`. That strategy only filters RAG results; it cannot replace the search.
+Tool selection uses `tool:` records and applies `IToolSelectionStrategy.select(results: RagResult[])`. Skill selection uses `skill:` records from all preloaded RAG results. If none are present, it queries all eligible stores with the existing RAG text and `k` before enumerating skills. A match loads the corresponding skill body from the manager. Hard mode also requires a match for skills.
 
 ## Contract
 
@@ -45,30 +46,63 @@ export interface IToolRetriever {
     options?: CallOptions,             // signal, session logger, usage sink
   ): Promise<Result<ToolRetrievalResult, SmartAgentError>>;
 }
+
+export interface SkillCandidate {
+  readonly name: string;
+  readonly description: string;
+}
+
+export interface SkillRetrievalRequest {
+  readonly text: string;
+  readonly candidates: readonly SkillCandidate[];
+}
+
+export interface SkillRetrievalResult {
+  readonly names: readonly string[];
+  readonly usage?: LlmUsage;
+}
+
+export interface ISkillRetriever {
+  readonly name: string;
+  retrieve(
+    request: SkillRetrievalRequest,
+    options?: CallOptions,
+  ): Promise<Result<SkillRetrievalResult, SmartAgentError>>;
+}
 ```
 
 Implementations:
 
-- `RagToolRetriever` (llm-agent-libs): today's behaviour moved behind the contract: embed `text`, query the tool stores, map `tool:` records to names, apply `IToolSelectionStrategy`. Default, so nothing changes for existing consumers.
-- `LlmToolRetriever` (llm-agent-libs): one call to a configured `ILlm`.
-  - System prompt: select every tool the step may need; prefer including a tool over leaving one out; answer only with names from the list.
-  - The candidate catalogue goes first and stays byte-stable between calls (sorted by name), so provider prompt caching applies; the step text goes last.
-  - JSON answer validated in `llm-agent-libs` (no dependency on `typesafe-decision`). The answer has the shape `{ tools: string[] }`. Names outside the candidate list return `TOOL_RETRIEVAL_INVALID`.
-  - Usage is reported per call and attributed to the role `tool-retriever` with its model.
+- `RagToolRetriever` and `RagSkillRetriever` implement the default RAG behaviour.
+- `LlmToolRetriever` and `LlmSkillRetriever` share the same selection core. Each makes one chat call to the configured `ILlm` with the full candidate catalogue sorted by name before the step text. The stable catalogue prefix supports provider prompt caching.
+- The shared core validates JSON locally in `llm-agent-libs`. The answer shape is `{ tools: string[] }` or `{ skills: string[] }`, respectively. Invalid JSON, an invalid shape or a name outside the catalogue returns `TOOL_RETRIEVAL_INVALID` or `SKILL_RETRIEVAL_INVALID`.
+- Usage is attributed once per call to the actual model and the role `tool-retriever` or `skill-retriever`.
 
 ## Pipeline
 
-- `ToolSelectHandler` calls `ctx.toolRetriever ?? new RagToolRetriever(...)` instead of querying the stores itself.
+- `ToolSelectHandler` delegates selection to `ctx.toolRetriever ?? new RagToolRetriever(...)`.
 - Candidates are `ctx.mcpTools` after the consumer's exposure filter (role allow-list) and before availability filtering. The exposure filter moves from the tools RAG wrapper to a candidate filter the consumer provides, so both retrievers see the same role-filtered set.
-- Abort, model-context overflow and other typed failures end the stage with that error; usage of a failed call is kept.
-- Session log: `tools_selected` gains `retriever: name`, and for the LLM retriever the selected names and token usage per model.
+- `SkillSelectHandler` uses `ctx.skillRetriever` when supplied and `RagSkillRetriever` by default. It loads the content of selected skills in manager order and makes the selected skills available to downstream stages.
+- Abort, model-context overflow and other typed failures end the stage with the original code and the usage of the failed call.
+- The LLM selectors log the selected names and per-model token usage in `llm_tool_retrieval` and `llm_skill_retrieval`.
+- The default pipeline omits `skippedRagStores` from generic `rag-query` stages and the request-time RAG view used by fallback searches. Use the `ragStores` keys for the dedicated catalogue stores, including `user/<name>` and `session/<name>` keys where applicable. Other stores are still queried normally. The built-in tool RAG stage and RAG tool-loop reselection are also suppressed whenever a tool retriever is supplied.
 
-Builder: `withToolRetriever(retriever: IToolRetriever)`.
+Configure the `llm` strategy with both retrievers and the catalogue store keys.
+
+```ts
+builder
+  .withToolRetriever(new LlmToolRetriever(selectorLlm))
+  .withSkillRetriever(new LlmSkillRetriever(selectorLlm))
+  .withSkippedRagStores('tools', 'skills');
+```
+
+Standalone `DefaultPipeline` callers pass `toolRetriever`, `skillRetriever` and `skippedRagStores` in `PipelineDeps`.
 
 ## Hub
 
 - Setting `toolRetrieval.strategy`: `rag` (default) | `llm`; `toolRetrieval.model`: the cheap model, no default. Read through the shared loader: config file < environment variable < launch parameter.
 - `llm` without a model is a startup error.
+- The hub passes the same configured model to both LLM retrievers and excludes each catalogue-only RAG store by key. The RAG configuration uses the default selectors and keeps its catalogue stores eligible.
 - The hub passes the role allow-list as the candidate filter.
 
 ## Measurement

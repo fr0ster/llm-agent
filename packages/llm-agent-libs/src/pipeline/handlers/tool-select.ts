@@ -13,10 +13,10 @@ import {
   resolveCallerIdentity,
 } from '../../policy/caller-identity.js';
 import type { ISpan } from '../../tracer/types.js';
+import { retrievalError } from '../catalogue-retrieval/retrieval-error.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 import { RagToolRetriever } from '../tool-retrieval/rag-tool-retriever.js';
-import { toolRetrievalError } from '../tool-retrieval/tool-retrieval-error.js';
 
 export class ToolSelectHandler implements IStageHandler {
   async execute(
@@ -102,7 +102,7 @@ export class ToolSelectHandler implements IStageHandler {
     try {
       result = await retriever.retrieve(request, options);
     } catch (error) {
-      ctx.error = toolRetrievalError(error, options?.signal);
+      ctx.error = retrievalError(error, 'tool', options?.signal);
       return false;
     }
     if (!result.ok) {

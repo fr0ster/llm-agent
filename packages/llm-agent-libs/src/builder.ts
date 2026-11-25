@@ -43,6 +43,7 @@ import type {
   IRequestLogger,
   IRetrievalStrategy,
   ISkillManager,
+  ISkillRetriever,
   ISubAgent,
   ISubpromptClassifier,
   IToolCache,
@@ -242,6 +243,8 @@ export class SmartAgentBuilder {
   private _agentOverrides: Partial<SmartAgentConfig> = {};
   private _pluginLoader?: IPluginLoader;
   private _skillManager?: ISkillManager;
+  private _skillRetriever?: ISkillRetriever;
+  private readonly _skippedRagStores = new Set<string>();
   private _clientAdapters: IClientAdapter[] = [];
   private _apiAdapters: Map<string, ILlmApiAdapter> = new Map();
   private _modelProvider?: IModelProvider;
@@ -592,6 +595,18 @@ export class SmartAgentBuilder {
   /** Replace the default RAG-based MCP tool selection. */
   withToolRetriever(retriever: IToolRetriever): this {
     this._toolRetriever = retriever;
+    return this;
+  }
+
+  /** Replace the default RAG-based skill selection. */
+  withSkillRetriever(retriever: ISkillRetriever): this {
+    this._skillRetriever = retriever;
+    return this;
+  }
+
+  /** Exclude the named stores from pipeline retrieval and built-in coordinator context. */
+  withSkippedRagStores(...names: string[]): this {
+    for (const name of names) this._skippedRagStores.add(name);
     return this;
   }
 
@@ -1522,26 +1537,23 @@ export class SmartAgentBuilder {
             'withCoordinator: requires either cfg.plannerLlm or withMainLlm() to be called',
           );
         }
-        // Construct a default context builder from this builder's available RAG
-        // + embedder resources. `toolSource` comes from the toolsRag the parent
-        // already uses for tool-loop retrieval. `projectSource` is left unset
-        // until a dedicated project/domain RAG slot is exposed on the builder.
-        // Like DefaultPipeline: this agent's OWN tools store keeps priority,
-        // with its explicit strategy applied; a projected `tools` entry is used
-        // only when it decorates that own store (never another agent's).
-        const toolsStrategy = this._retrievalStrategies.get('tools');
-        const ownTools =
-          toolsRag && applyRetrievalStrategy(toolsRag, toolsStrategy);
-        const toolSource = this.buildRetrievalSource(
-          toolsRag,
-          this._embedder,
-          () =>
-            ownBuiltInStore(
-              toolsRag as IRag,
-              ownTools as IRag,
-              ragStores.tools?.rag,
-            ),
-        );
+        const useRetrievedTools = this._toolRetriever !== undefined;
+        let toolSource: SubAgentRetrievalSource | undefined;
+        if (
+          !useRetrievedTools &&
+          !this._skippedRagStores.has('tools') &&
+          toolsRag
+        ) {
+          // Preserve the agent's own tools store and strategy when resolving
+          // a matching decoration from the live registry projection.
+          const ownTools = applyRetrievalStrategy(
+            toolsRag,
+            this._retrievalStrategies.get('tools'),
+          );
+          toolSource = this.buildRetrievalSource(toolsRag, this._embedder, () =>
+            ownBuiltInStore(toolsRag, ownTools, ragStores.tools?.rag),
+          );
+        }
         const defaultContextBuilder = new DefaultSubAgentContextBuilder({
           toolSource,
         });
@@ -1552,7 +1564,7 @@ export class SmartAgentBuilder {
           dispatch:
             this._coordinator.dispatch ??
             new HybridDispatch(
-              new SubAgentDispatch(defaultContextBuilder),
+              new SubAgentDispatch(defaultContextBuilder, useRetrievedTools),
               new SelfDispatch(
                 plannerLlm,
                 undefined,
@@ -1590,6 +1602,8 @@ export class SmartAgentBuilder {
         embedder: this._embedder,
         toolSelectionStrategy: this._toolSelectionStrategy,
         toolRetriever: this._toolRetriever,
+        skillRetriever: this._skillRetriever,
+        skippedRagStores: [...this._skippedRagStores],
         toolCandidateFilter: this._toolCandidateFilter,
         reranker: this._reranker,
         queryExpander: this._queryExpander,
