@@ -1,5 +1,13 @@
 # @mcp-abap-adt/sap-aicore-llm
 
+## 31.2.0
+
+### Minor Changes
+
+- 4d73aab: Add a SAP AI Core foundation deployment chat provider and register it as sap-aicore-foundation in the server. Share OpenAI Chat Completions and Anthropic Messages wire mappers with the direct providers.
+  
+  Record deployment refresh retries through the shared provider retry loop and retain token counts across partial usage chunks.
+
 ## 31.1.5
 
 ### Patch Changes
