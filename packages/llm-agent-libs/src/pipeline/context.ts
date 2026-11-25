@@ -36,6 +36,7 @@ import type {
   IRequestLogger,
   ISkill,
   ISkillManager,
+  ISkillRetriever,
   ISubpromptClassifier,
   IToolCache,
   IToolNamespace,
@@ -134,6 +135,7 @@ export interface PipelineContext {
   readonly toolAvailabilityRegistry: ToolAvailabilityRegistry;
   readonly pendingToolResults: PendingToolResultsRegistry;
   readonly skillManager: ISkillManager | undefined;
+  readonly skillRetriever?: ISkillRetriever;
   readonly embedder: IQueryEmbedder | undefined;
   readonly toolSelectionStrategy: IToolSelectionStrategy | undefined;
   readonly toolRetriever?: IToolRetriever;

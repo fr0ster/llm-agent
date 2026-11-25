@@ -16,8 +16,8 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgentRagStores } from '../../agent.js';
 import { denyRagAccess, ownerBoundQuery } from '../../rag/owner-bound-query.js';
+import { retrievalError } from '../catalogue-retrieval/retrieval-error.js';
 import { DEFAULT_TOOL_SELECTION } from '../tool-selection/index.js';
-import { toolRetrievalError } from './tool-retrieval-error.js';
 
 export interface RagToolRetrieverOptions {
   readonly ragStores: SmartAgentRagStores;
@@ -117,7 +117,10 @@ export class RagToolRetriever implements IToolRetriever {
         },
       };
     } catch (error) {
-      return { ok: false, error: toolRetrievalError(error, options?.signal) };
+      return {
+        ok: false,
+        error: retrievalError(error, 'tool', options?.signal),
+      };
     }
   }
 }

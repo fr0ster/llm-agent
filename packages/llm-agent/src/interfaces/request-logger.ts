@@ -5,6 +5,7 @@ export type LlmComponent =
   | 'classifier'
   | 'tool-definer'
   | 'tool-retriever'
+  | 'skill-retriever'
   | 'helper'
   | 'translate'
   | 'query-expander'

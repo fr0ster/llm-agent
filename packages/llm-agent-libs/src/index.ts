@@ -181,6 +181,11 @@ export {
   type StageDefinition,
   type StageType,
 } from './pipeline/index.js';
+export { LlmSkillRetriever } from './pipeline/skill-retrieval/llm-skill-retriever.js';
+export {
+  RagSkillRetriever,
+  type RagSkillRetrieverOptions,
+} from './pipeline/skill-retrieval/rag-skill-retriever.js';
 export { LlmToolRetriever } from './pipeline/tool-retrieval/llm-tool-retriever.js';
 export {
   RagToolRetriever,

@@ -31,6 +31,7 @@ import type {
   IRequestLogger,
   IRetrievalStrategy,
   ISkillManager,
+  ISkillRetriever,
   ISubpromptClassifier,
   IToolCache,
   IToolNamespace,
@@ -116,6 +117,8 @@ export interface PipelineDeps {
   injectionDetector?: IPromptInjectionDetector;
   /** Optional skill manager for slash-command resolution. */
   skillManager?: ISkillManager;
+  /** Optional replacement for RAG-based skill selection. */
+  skillRetriever?: ISkillRetriever;
   /** Optional embedder for on-the-fly embedding operations. */
   embedder?: IQueryEmbedder;
   /** Strategy that filters scored RAG results for tool exposure. Default: top-k. */
@@ -137,6 +140,8 @@ export interface PipelineDeps {
   /** Full record of RAG stores (tools, history, and any custom stores). */
   ragAccess?: RagAccess;
   ragStores?: Record<string, OwnedRagStore>;
+  /** Store keys excluded from the pipeline's request-time RAG view. */
+  skippedRagStores?: readonly string[];
   /**
    * Explicit per-store retrieval strategies, keyed like `ragStores`
    * (`SmartAgentBuilder.withRetrievalStrategy`). The `tools`/`history` entries

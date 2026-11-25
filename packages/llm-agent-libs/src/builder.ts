@@ -43,6 +43,7 @@ import type {
   IRequestLogger,
   IRetrievalStrategy,
   ISkillManager,
+  ISkillRetriever,
   ISubAgent,
   ISubpromptClassifier,
   IToolCache,
@@ -242,6 +243,8 @@ export class SmartAgentBuilder {
   private _agentOverrides: Partial<SmartAgentConfig> = {};
   private _pluginLoader?: IPluginLoader;
   private _skillManager?: ISkillManager;
+  private _skillRetriever?: ISkillRetriever;
+  private readonly _skippedRagStores = new Set<string>();
   private _clientAdapters: IClientAdapter[] = [];
   private _apiAdapters: Map<string, ILlmApiAdapter> = new Map();
   private _modelProvider?: IModelProvider;
@@ -592,6 +595,18 @@ export class SmartAgentBuilder {
   /** Replace the default RAG-based MCP tool selection. */
   withToolRetriever(retriever: IToolRetriever): this {
     this._toolRetriever = retriever;
+    return this;
+  }
+
+  /** Replace the default RAG-based skill selection. */
+  withSkillRetriever(retriever: ISkillRetriever): this {
+    this._skillRetriever = retriever;
+    return this;
+  }
+
+  /** Exclude the named stores from the pipeline's RAG stages and fallback searches. */
+  withSkippedRagStores(...names: string[]): this {
+    for (const name of names) this._skippedRagStores.add(name);
     return this;
   }
 
@@ -1590,6 +1605,8 @@ export class SmartAgentBuilder {
         embedder: this._embedder,
         toolSelectionStrategy: this._toolSelectionStrategy,
         toolRetriever: this._toolRetriever,
+        skillRetriever: this._skillRetriever,
+        skippedRagStores: [...this._skippedRagStores],
         toolCandidateFilter: this._toolCandidateFilter,
         reranker: this._reranker,
         queryExpander: this._queryExpander,

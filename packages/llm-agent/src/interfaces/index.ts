@@ -298,6 +298,13 @@ export type {
   ISkillMeta,
   ISkillResource,
 } from './skill.js';
+export {
+  type ISkillRetriever,
+  SKILL_RETRIEVAL_INVALID,
+  type SkillCandidate,
+  type SkillRetrievalRequest,
+  type SkillRetrievalResult,
+} from './skill-retriever.js';
 export type {
   ActiveSnapshot,
   CatalogEntry,
