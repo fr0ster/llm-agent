@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { Readable } from 'node:stream';
 import { type TestContext, test } from 'node:test';
 import {
   addTokenUsage,
@@ -6,8 +7,10 @@ import {
   type LLMResponse,
   LlmError,
   MODEL_CONTEXT_EXCEEDED,
+  staticApiKey,
   type UsageInput,
 } from '@mcp-abap-adt/llm-agent';
+import { OpenAIProvider } from '@mcp-abap-adt/openai-llm';
 import {
   type SapAiCoreFoundationConfig,
   SapAiCoreFoundationProvider,
@@ -173,6 +176,15 @@ async function collect(stream: AsyncIterable<LLMResponse>) {
   return chunks;
 }
 
+function captureUsage() {
+  const records: UsageInput[] = [];
+  const usage: IUsageRecorder = {
+    record: (record) => records.push(record),
+    with: () => usage,
+  };
+  return { records, usage };
+}
+
 test('resolves running deployments per model and refreshes stale URLs on 404', async (t) => {
   const calls: string[] = [];
   let listings = 0;
@@ -214,6 +226,65 @@ test('resolves running deployments per model and refreshes stale URLs on 404', a
     '/v2/inference/deployments/replacement/chat/completions',
   ]);
 });
+
+for (const method of ['chat', 'streamChat'] as const) {
+  test(`foundation ${method} records each POST when a cached deployment is replaced`, async (t) => {
+    const { records, usage } = captureUsage();
+    const posts: string[] = [];
+    let active = 'original';
+    let listings = 0;
+    mockHttp(t, (url, init) => {
+      if (url.pathname === '/v2/lm/deployments') {
+        listings++;
+        return Response.json({ resources: [deployment(openAIModel, active)] });
+      }
+      assert.equal(init?.method, 'POST');
+      posts.push(url.href);
+      if (url.href !== `${deploymentUrl}${active}${completionPath}`) {
+        return new Response(null, { status: 404 });
+      }
+      return method === 'streamChat'
+        ? sse(sseFrames({ choices: [{ delta: { content: 'OK' } }] }, '[DONE]'))
+        : Response.json({ choices: [{ message: { content: 'OK' } }] });
+    });
+    const llm = provider(openAIModel, { usage });
+    const run = async () =>
+      method === 'streamChat'
+        ? (await collect(llm.streamChat(messages)))
+            .map((chunk) => chunk.content)
+            .join('')
+        : (await llm.chat(messages)).content;
+    assert.equal(await run(), 'OK');
+    active = 'replacement';
+    assert.equal(await run(), 'OK');
+
+    assert.equal(listings, 2);
+    assert.deepEqual(
+      posts,
+      ['original', 'original', 'replacement'].map(
+        (id) => `${deploymentUrl}${id}${completionPath}`,
+      ),
+    );
+    assert.equal(records.length, posts.length);
+    const calls = records.filter((record) => record.kind === 'llm.call');
+    assert.deepEqual(
+      calls.map((record) => [
+        record.outcome,
+        record.errorStatus,
+        record.providerAttempt,
+        record.physicalSeq,
+      ]),
+      [
+        ['ok', undefined, 0, 0],
+        ['error', 404, 0, 0],
+        ['ok', undefined, 1, 1],
+      ],
+    );
+    assert.notEqual(calls[0].operationId, calls[1].operationId);
+    assert.equal(calls[1].operationId, calls[2].operationId);
+    assert.ok(calls.every((record) => record.retriesVisible));
+  });
+}
 
 test('looks through deployment pages and scopes discovery to the configured resource group', async (t) => {
   const groups: string[] = [];
@@ -469,6 +540,57 @@ test('OpenAI SSE handles split UTF-8, argument deltas, usage and the terminal se
   assert.deepEqual(chunks.at(-1)?.usage, expectedUsage);
 });
 
+test('OpenAI SSE retains partial usage across empty chunks like the direct provider', async (t) => {
+  const frames = sseFrames(
+    {
+      choices: [],
+      usage: {
+        prompt_tokens: 5,
+        completion_tokens: 1,
+        prompt_tokens_details: { cached_tokens: 3, cache_write_tokens: 1 },
+      },
+    },
+    { choices: [], usage: {} },
+    { choices: [], usage: { completion_tokens: 2 } },
+    { choices: [], usage: {} },
+    '[DONE]',
+  );
+  mockHttp(t, (url) =>
+    url.pathname === '/v2/lm/deployments' ? list() : sse(frames),
+  );
+  const foundation = captureUsage();
+  const direct = captureUsage();
+  const directProvider = new OpenAIProvider({
+    model: openAIModel,
+    credential: staticApiKey('test-key'),
+    usage: direct.usage,
+  });
+  t.mock.method(directProvider.client, 'post', async () => ({
+    data: Readable.from([frames]),
+  }));
+  await collect(
+    provider(openAIModel, { usage: foundation.usage }).streamChat(messages),
+  );
+  await collect(directProvider.streamChat(messages));
+
+  const tokenFacts = (records: UsageInput[]) =>
+    records.map((record) => {
+      assert.equal(record.kind, 'llm.call');
+      return [
+        record.outcome,
+        record.tokensSource,
+        record.inputTokens,
+        record.outputTokens,
+        record.cachedInputTokens,
+        record.cacheCreationInputTokens,
+      ];
+    });
+  assert.deepEqual(tokenFacts(foundation.records), tokenFacts(direct.records));
+  assert.deepEqual(tokenFacts(foundation.records), [
+    ['ok', 'provider', 5, 2, 3, 1],
+  ]);
+});
+
 test('OpenAI SSE leaves empty tool arguments intact when generation ends at the token limit', async (t) => {
   mockHttp(t, (url) =>
     url.pathname === '/v2/lm/deployments'
@@ -504,15 +626,7 @@ test('OpenAI SSE leaves empty tool arguments intact when generation ends at the 
 });
 
 async function checkAnthropicStream(t: TestContext, wire: string) {
-  const records: UsageInput[] = [];
-  const usage: IUsageRecorder = {
-    record(input) {
-      records.push(input);
-    },
-    with() {
-      return this;
-    },
-  };
+  const { records, usage } = captureUsage();
   mockHttp(t, (url, init) => {
     if (url.pathname === '/v2/lm/deployments') return list();
     assert.equal(
@@ -573,10 +687,11 @@ async function checkAnthropicStream(t: TestContext, wire: string) {
       {
         type: 'message_delta',
         delta: { stop_reason: 'tool_use' },
-        usage: anthropicUsage,
+        usage: { output_tokens: anthropicUsage.output_tokens },
       },
       {
         type: 'message_stop',
+        usage: {},
         'amazon-bedrock-invocationMetrics': { outputTokenCount: 4 },
       },
     ];
@@ -620,8 +735,10 @@ async function checkAnthropicStream(t: TestContext, wire: string) {
     .reduce(addTokenUsage, undefined);
   assert.deepEqual(totals, expectedUsage);
   const record = records[0];
+  assert.equal(records.length, 1);
   assert.equal(record.kind, 'llm.call');
   assert.equal(record.outcome, 'ok');
+  assert.equal(record.tokensSource, 'provider');
   assert.equal(record.inputTokens, 6);
   assert.equal(record.outputTokens, 4);
   assert.equal(record.cachedInputTokens, 8);

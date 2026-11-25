@@ -56,6 +56,14 @@ const OPENAI_PATH = '/chat/completions?api-version=2024-10-21';
 const PROVIDER_ID = 'sap-aicore-foundation';
 const SSE = 'text/event-stream';
 
+class StaleDeploymentError extends LlmError {
+  readonly status = 404;
+
+  constructor() {
+    super('SAP AI Core foundation request failed (HTTP 404)');
+  }
+}
+
 async function* readStream(
   response: Response,
   family: 'openai' | 'anthropic',
@@ -318,48 +326,76 @@ export class SapAiCoreFoundationProvider extends BaseLLMProvider<SapAiCoreFounda
     };
   }
 
-  private async post(
+  private preparePost<Stream extends boolean>(
     request: ReturnType<SapAiCoreFoundationProvider['prepare']>,
-    headers: RequestHeaders,
-    stream: boolean,
-    signal?: AbortSignal,
+    stream: Stream,
+    options?: LLMCallOptions,
   ) {
+    const signal = options?.signal;
     const accept = stream
       ? request.family === 'anthropic'
         ? `${AWS_EVENT_STREAM}, ${SSE}`
         : SSE
       : 'application/json';
-    const send = (deployment: Deployment) =>
-      fetch(deployment.url + request.path, {
-        method: 'POST',
-        headers: {
-          ...headers,
-          'Content-Type': 'application/json',
-          Accept: accept,
-        },
-        body: JSON.stringify(request.body),
+    const body = JSON.stringify(request.body);
+    let headers: RequestHeaders;
+    let deployment: Deployment;
+    let refreshing = false;
+
+    return {
+      post: async () => {
+        const response = await fetch(deployment.url + request.path, {
+          method: 'POST',
+          headers: {
+            ...headers,
+            'Content-Type': 'application/json',
+            Accept: accept,
+          },
+          body,
+          signal,
+          redirect: 'error',
+        });
+        if (response.status === 404) {
+          if (this.deployments.get(request.model) === deployment)
+            this.deployments.delete(request.model);
+          await response.body?.cancel().catch(() => {});
+          throw new StaleDeploymentError();
+        }
+        if (!response.ok) throw await inferenceError(response);
+        return response;
+      },
+      throttle: {
+        model: request.model,
         signal,
-        redirect: 'error',
-      });
-    const forget = (deployment: Deployment) => {
-      if (this.deployments.get(request.model) === deployment)
-        this.deployments.delete(request.model);
+        retryImmediately: (error: object | undefined) => {
+          refreshing = error instanceof StaleDeploymentError && !refreshing;
+          return refreshing;
+        },
+      },
+      usage: {
+        prepare: async () => {
+          headers = await this.headers(signal);
+          deployment = await this.resolveDeployment(
+            request.model,
+            headers,
+            signal,
+          );
+          signal?.throwIfAborted();
+        },
+        opts: options,
+        op: startOperation(options),
+        get base() {
+          return {
+            provider: PROVIDER_ID,
+            model: request.model,
+            stream,
+            granularity: 'request' as const,
+            retriesVisible: true,
+            ...request.shape(),
+          };
+        },
+      },
     };
-    let deployment = await this.resolveDeployment(
-      request.model,
-      headers,
-      signal,
-    );
-    let response = await send(deployment);
-    if (response.status === 404) {
-      forget(deployment);
-      await response.body?.cancel().catch(() => {});
-      deployment = await this.resolveDeployment(request.model, headers, signal);
-      response = await send(deployment);
-      if (response.status === 404) forget(deployment);
-    }
-    if (!response.ok) throw await inferenceError(response);
-    return response;
   }
 
   private safeError<T>(error: T, signal?: AbortSignal): LlmError {
@@ -381,11 +417,15 @@ export class SapAiCoreFoundationProvider extends BaseLLMProvider<SapAiCoreFounda
     const signal = options?.signal;
     signal?.throwIfAborted();
     const request = this.prepare(messages, tools, false, options);
-    let headers: RequestHeaders;
     try {
+      const { post, throttle, usage } = this.preparePost(
+        request,
+        false,
+        options,
+      );
       return await this.withThrottleRetry(
         async (handle) => {
-          const response = await this.post(request, headers, false, signal);
+          const response = await post();
           let mapped: LLMResponse;
           let facts: Partial<LlmRequestFacts>;
           if (request.family === 'anthropic') {
@@ -407,24 +447,8 @@ export class SapAiCoreFoundationProvider extends BaseLLMProvider<SapAiCoreFounda
           handle.end({ outcome: 'ok', ...facts });
           return mapped;
         },
-        { model: request.model, signal },
-        {
-          prepare: async () => {
-            headers = await this.headers(signal);
-          },
-          opts: options,
-          op: startOperation(options),
-          get base() {
-            return {
-              provider: PROVIDER_ID,
-              model: request.model,
-              stream: false as const,
-              granularity: 'request' as const,
-              retriesVisible: true,
-              ...request.shape(),
-            };
-          },
-        },
+        throttle,
+        usage,
       );
     } catch (error) {
       throw this.safeError(error, signal);
@@ -439,28 +463,16 @@ export class SapAiCoreFoundationProvider extends BaseLLMProvider<SapAiCoreFounda
     const signal = options?.signal;
     signal?.throwIfAborted();
     const request = this.prepare(messages, tools, true, options);
-    let headers: RequestHeaders;
     try {
+      const { post, throttle, usage } = this.preparePost(
+        request,
+        true,
+        options,
+      );
       const { response, handle } = await this.withThrottleRetry(
-        async () => this.post(request, headers, true, signal),
-        { model: request.model, signal },
-        {
-          prepare: async () => {
-            headers = await this.headers(signal);
-          },
-          opts: options,
-          op: startOperation(options),
-          get base() {
-            return {
-              provider: PROVIDER_ID,
-              model: request.model,
-              stream: true as const,
-              granularity: 'request' as const,
-              retriesVisible: true,
-              ...request.shape(),
-            };
-          },
-        },
+        post,
+        throttle,
+        usage,
       );
       let completed = false;
       let failure: Error | undefined;
@@ -500,7 +512,8 @@ export class SapAiCoreFoundationProvider extends BaseLLMProvider<SapAiCoreFounda
                 wire.error.message,
                 openai.isContextOverflow(wire.error),
               );
-            if (wire.usage) facts = openai.tokenFacts(wire.usage);
+            if (wire.usage)
+              facts = { ...facts, ...openai.tokenFacts(wire.usage) };
             for (const mapped of openAIMapper.map(wire)) {
               if (mapped.content || mapped.toolCalls?.length)
                 handle.firstToken();
