@@ -42,6 +42,8 @@
     "packages/llm-agent-server-libs/src/smart-agent/http/__tests__/adapter-external-history.test.ts",
     "packages/anthropic-llm/src/__tests__/external-history.test.ts",
     "packages/openai-llm/src/__tests__/external-history.test.ts",
+    "packages/anthropic-llm/src/__tests__/direct-provider-parity.test.ts",
+    "packages/openai-llm/src/__tests__/direct-provider-parity.test.ts",
     "packages/deepseek-llm/src/__tests__/external-history.test.ts",
     "packages/ollama-llm/src/__tests__/external-history.test.ts",
     "packages/sap-aicore-llm/src/__tests__/external-history.test.ts",

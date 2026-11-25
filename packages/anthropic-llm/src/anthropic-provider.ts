@@ -444,8 +444,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
           const data = trimmed.slice(6);
           try {
             const parsed: AnthropicStreamEvent = JSON.parse(data);
-            const kind = eventType || parsed.type;
-            if (kind === 'error') {
+            if (eventType === 'error') {
               const error: AnthropicErrorResponse['error'] = parsed.error;
               const message = `Anthropic stream error: ${error?.type ?? 'error'}: ${error?.message ?? 'unspecified'}`;
               if (isContextOverflow(error)) {
@@ -463,7 +462,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
               parsed.delta?.partial_json
             )
               handle.firstToken();
-            const mapped = mapper.map(parsed, kind);
+            const mapped = mapper.map(parsed, eventType);
             if (mapped) yield mapped;
           } catch (e) {
             if (

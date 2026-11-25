@@ -339,9 +339,10 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
               }
             }
             if (parsed.usage) facts = { ...facts, ...tokenFacts(parsed.usage) };
+            const delta = parsed.choices?.[0]?.delta;
+            if (delta?.content || delta?.tool_calls?.length)
+              request.firstToken();
             for (const mapped of mapper.map(parsed)) {
-              if (mapped.content || mapped.toolCalls?.length)
-                request.firstToken();
               yield mapped;
             }
           } catch (error) {
@@ -461,8 +462,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
 
   /**
    * Return the appropriate token limit parameter for the model.
-   * o-series and GPT-5+ models require max_completion_tokens;
-   * legacy models use max_tokens.
+   * Keep the direct provider's token limit selection for existing callers.
    */
   protected getTokenLimitParam(
     model: string,

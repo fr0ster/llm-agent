@@ -17,6 +17,7 @@ import {
   startOperation,
 } from '@mcp-abap-adt/llm-agent';
 import { openAIChatWire as openai } from '@mcp-abap-adt/openai-llm';
+import { AWS_EVENT_STREAM, readBedrockEvents } from './bedrock-event-stream.js';
 import { readSse } from './server-sent-events.js';
 
 export interface SapAiCoreFoundationConfig extends LLMProviderConfig {
@@ -53,6 +54,31 @@ interface Deployment {
 
 const OPENAI_PATH = '/chat/completions?api-version=2024-10-21';
 const PROVIDER_ID = 'sap-aicore-foundation';
+const SSE = 'text/event-stream';
+
+async function* readStream(
+  response: Response,
+  family: 'openai' | 'anthropic',
+  signal?: AbortSignal,
+) {
+  const contentType = response.headers
+    .get('content-type')
+    ?.split(';', 1)[0]
+    .trim()
+    .toLowerCase();
+  const bedrock = family === 'anthropic' && contentType === AWS_EVENT_STREAM;
+  if (contentType !== SSE && !bedrock) {
+    await response.body?.cancel().catch(() => {});
+    throw new LlmError(
+      'Unsupported SAP AI Core foundation stream content type',
+    );
+  }
+  if (!response.body)
+    throw new LlmError('SAP AI Core foundation stream has no body');
+  yield* bedrock
+    ? readBedrockEvents(response.body, signal)
+    : readSse(response.body, signal);
+}
 
 function httpError(status: number, headers: Headers) {
   const message = `SAP AI Core foundation request failed (HTTP ${status})`;
@@ -244,7 +270,9 @@ export class SapAiCoreFoundationProvider extends BaseLLMProvider<SapAiCoreFounda
     if (!model.startsWith('anthropic--')) {
       const sent = openai.formatMessages(messages);
       const body = {
-        ...openai.requestBody(model, sent, tools, knobs),
+        ...openai.requestBody(model, sent, tools, knobs, (id, maxTokens) =>
+          openai.tokenLimitParam(id, maxTokens, { extendedModels: true }),
+        ),
         ...(stream ? openai.streamParams() : {}),
       };
       return {
@@ -292,17 +320,22 @@ export class SapAiCoreFoundationProvider extends BaseLLMProvider<SapAiCoreFounda
 
   private async post(
     request: ReturnType<SapAiCoreFoundationProvider['prepare']>,
+    headers: RequestHeaders,
     stream: boolean,
     signal?: AbortSignal,
   ) {
-    const headers = await this.headers(signal);
+    const accept = stream
+      ? request.family === 'anthropic'
+        ? `${AWS_EVENT_STREAM}, ${SSE}`
+        : SSE
+      : 'application/json';
     const send = (deployment: Deployment) =>
       fetch(deployment.url + request.path, {
         method: 'POST',
         headers: {
           ...headers,
           'Content-Type': 'application/json',
-          Accept: stream ? 'text/event-stream' : 'application/json',
+          Accept: accept,
         },
         body: JSON.stringify(request.body),
         signal,
@@ -330,6 +363,8 @@ export class SapAiCoreFoundationProvider extends BaseLLMProvider<SapAiCoreFounda
   }
 
   private safeError<T>(error: T, signal?: AbortSignal): LlmError {
+    if (error instanceof LlmError && error.code === MODEL_CONTEXT_EXCEEDED)
+      return error;
     signal?.throwIfAborted();
     if (error instanceof LlmError) return error;
     return this.preserveThrottled(
@@ -346,17 +381,18 @@ export class SapAiCoreFoundationProvider extends BaseLLMProvider<SapAiCoreFounda
     const signal = options?.signal;
     signal?.throwIfAborted();
     const request = this.prepare(messages, tools, false, options);
+    let headers: RequestHeaders;
     try {
       return await this.withThrottleRetry(
         async (handle) => {
-          const response = await this.post(request, false, signal);
+          const response = await this.post(request, headers, false, signal);
           let mapped: LLMResponse;
           let facts: Partial<LlmRequestFacts>;
           if (request.family === 'anthropic') {
             const wire =
               (await response.json()) as anthropic.AnthropicChatResponse;
             if (wire.error) throw modelError(wire.error.message);
-            mapped = anthropic.chatResponse(wire);
+            mapped = anthropic.chatResponse(wire, { defaultToolInput: true });
             facts = anthropic.tokenFacts(wire.usage);
           } else {
             const wire = (await response.json()) as openai.OpenAIChatResponse;
@@ -365,7 +401,7 @@ export class SapAiCoreFoundationProvider extends BaseLLMProvider<SapAiCoreFounda
                 wire.error.message,
                 openai.isContextOverflow(wire.error),
               );
-            mapped = openai.chatResponse(wire);
+            mapped = openai.chatResponse(wire, { normalizeToolCalls: true });
             facts = openai.tokenFacts(wire.usage);
           }
           handle.end({ outcome: 'ok', ...facts });
@@ -373,6 +409,9 @@ export class SapAiCoreFoundationProvider extends BaseLLMProvider<SapAiCoreFounda
         },
         { model: request.model, signal },
         {
+          prepare: async () => {
+            headers = await this.headers(signal);
+          },
           opts: options,
           op: startOperation(options),
           get base() {
@@ -400,11 +439,15 @@ export class SapAiCoreFoundationProvider extends BaseLLMProvider<SapAiCoreFounda
     const signal = options?.signal;
     signal?.throwIfAborted();
     const request = this.prepare(messages, tools, true, options);
+    let headers: RequestHeaders;
     try {
       const { response, handle } = await this.withThrottleRetry(
-        async () => this.post(request, true, signal),
+        async () => this.post(request, headers, true, signal),
         { model: request.model, signal },
         {
+          prepare: async () => {
+            headers = await this.headers(signal);
+          },
           opts: options,
           op: startOperation(options),
           get base() {
@@ -424,11 +467,17 @@ export class SapAiCoreFoundationProvider extends BaseLLMProvider<SapAiCoreFounda
       let facts: Partial<LlmRequestFacts> = {};
 
       try {
-        const openAIMapper = new openai.OpenAIStreamMapper();
-        const anthropicMapper = new anthropic.AnthropicStreamMapper();
-        if (!response.body)
-          throw new LlmError('SAP AI Core foundation stream has no body');
-        for await (const event of readSse(response.body, signal)) {
+        const openAIMapper = new openai.OpenAIStreamMapper({
+          includeFinishOnlyChunks: true,
+        });
+        const anthropicMapper = new anthropic.AnthropicStreamMapper({
+          deltaUsage: true,
+        });
+        for await (const event of readStream(
+          response,
+          request.family,
+          signal,
+        )) {
           if (event.data === '[DONE]') break;
           if (request.family === 'anthropic') {
             const wire: anthropic.AnthropicStreamEvent = JSON.parse(event.data);
@@ -459,8 +508,6 @@ export class SapAiCoreFoundationProvider extends BaseLLMProvider<SapAiCoreFounda
             }
           }
         }
-        const toolCalls = openAIMapper.finish();
-        if (toolCalls.length) yield { content: '', toolCalls };
         completed = true;
       } catch (error) {
         failure =

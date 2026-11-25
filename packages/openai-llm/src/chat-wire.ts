@@ -62,8 +62,12 @@ export function isContextOverflow(
 export function tokenLimitParam(
   model: string,
   maxTokens: number,
+  options?: { extendedModels?: boolean },
 ): Record<string, number> {
-  return /^(o\d|gpt-(?:[5-9]|\d{2,})(?:[.-]|$))/i.test(model)
+  const completionModels = options?.extendedModels
+    ? /^(o\d|gpt-(?:[5-9]|\d{2,})(?:[.-]|$))/i
+    : /^(o[13]|gpt-5)/i;
+  return completionModels.test(model)
     ? { max_completion_tokens: maxTokens }
     : { max_tokens: maxTokens };
 }
@@ -117,7 +121,8 @@ export function requestBody(
   return {
     model,
     messages,
-    ...(tools?.length ? { tools, tool_choice: 'auto' } : {}),
+    tools: tools?.length ? tools : undefined,
+    tool_choice: tools?.length ? 'auto' : undefined,
     ...(options.temperature !== undefined
       ? { temperature: options.temperature }
       : {}),
@@ -131,19 +136,27 @@ export function streamParams() {
   return { stream: true, stream_options: { include_usage: true } };
 }
 
-export function chatResponse(raw: OpenAIChatResponse): LLMResponse {
+export function chatResponse(
+  raw: OpenAIChatResponse,
+  options?: { normalizeToolCalls?: boolean },
+): LLMResponse {
   const choice = raw.choices?.[0];
   if (!choice)
     throw new Error('OpenAI chat response is missing a completion choice');
-  const toolCalls = choice.message.tool_calls?.map((call, index) => ({
-    index,
-    id: call.id,
-    name: call.function.name,
-    arguments: call.function.arguments || '{}',
-  }));
+  const toolCalls = options?.normalizeToolCalls
+    ? choice.message.tool_calls?.map((call, index) => ({
+        index,
+        id: call.id,
+        name: call.function.name,
+        arguments:
+          choice.finish_reason === 'tool_calls'
+            ? call.function.arguments || '{}'
+            : call.function.arguments,
+      }))
+    : undefined;
   return {
     content: choice.message.content || '',
-    finishReason: choice.finish_reason ?? undefined,
+    finishReason: choice.finish_reason as string | undefined,
     raw,
     usage: raw.usage ? normalizedUsage(raw.usage) : undefined,
     ...(toolCalls?.length ? { toolCalls } : {}),
@@ -194,9 +207,17 @@ export function tokenFacts(
 export class OpenAIStreamMapper {
   private readonly toolArgumentsReceived = new Map<number, boolean>();
 
+  constructor(
+    private readonly options?: { includeFinishOnlyChunks?: boolean },
+  ) {}
+
   *map(raw: OpenAIChatEvent): Iterable<LLMResponse> {
     const choice = raw.choices?.[0];
-    if (choice && (choice.delta || choice.finish_reason)) {
+    if (
+      choice &&
+      (choice.delta ||
+        (this.options?.includeFinishOnlyChunks && choice.finish_reason))
+    ) {
       const toolCalls = (choice.delta?.tool_calls ?? []).map((call) => ({
         index: call.index,
         id: call.id,
@@ -210,11 +231,12 @@ export class OpenAIStreamMapper {
             this.toolArgumentsReceived.get(call.index) === true,
         );
       }
-      const remaining = choice.finish_reason ? this.finish() : [];
+      const remaining =
+        choice.finish_reason === 'tool_calls' ? this.finish() : [];
       const deltas = [...toolCalls, ...remaining];
       yield {
         content: choice.delta?.content || '',
-        finishReason: choice.finish_reason ?? undefined,
+        finishReason: choice.finish_reason as string | undefined,
         raw,
         ...(deltas.length ? { toolCalls: deltas } : {}),
       };
@@ -224,7 +246,7 @@ export class OpenAIStreamMapper {
       yield { content: '', raw, usage: normalizedUsage(raw.usage) };
   }
 
-  finish() {
+  private finish() {
     const remaining = [...this.toolArgumentsReceived]
       .filter(([, hasArguments]) => !hasArguments)
       .map(([index]) => ({ index, arguments: '{}' }));

@@ -110,6 +110,63 @@ function sse(text: string) {
     { headers: { 'Content-Type': 'text/event-stream' } },
   );
 }
+const awsContentType = 'application/vnd.amazon.eventstream';
+
+function awsFrame(
+  payload: object,
+  headers: Record<string, string> = {
+    ':message-type': 'event',
+    ':event-type': 'chunk',
+    ':content-type': 'application/json',
+  },
+) {
+  const encodedHeaders = Buffer.concat(
+    Object.entries(headers).map(([name, value]) => {
+      const key = Buffer.from(name);
+      const bytes = Buffer.from(value);
+      const valueLength = Buffer.alloc(2);
+      valueLength.writeUInt16BE(bytes.length);
+      return Buffer.concat([
+        Buffer.of(key.length),
+        key,
+        Buffer.of(7),
+        valueLength,
+        bytes,
+      ]);
+    }),
+  );
+  const json = Buffer.from(JSON.stringify(payload));
+  const frame = Buffer.alloc(16 + encodedHeaders.length + json.length);
+  frame.writeUInt32BE(frame.length, 0);
+  frame.writeUInt32BE(encodedHeaders.length, 4);
+  const checksum = (end: number) => {
+    let crc = -1;
+    for (const byte of frame.subarray(0, end)) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit++)
+        crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+    return ~crc >>> 0;
+  };
+  frame.writeUInt32BE(checksum(8), 8);
+  encodedHeaders.copy(frame, 12);
+  json.copy(frame, 12 + encodedHeaders.length);
+  frame.writeUInt32BE(checksum(frame.length - 4), frame.length - 4);
+  return frame;
+}
+
+function awsResponse(...parts: Uint8Array[]) {
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const part of parts) controller.enqueue(part);
+        controller.close();
+      },
+    }),
+    { headers: { 'Content-Type': awsContentType } },
+  );
+}
+
 async function collect(stream: AsyncIterable<LLMResponse>) {
   const chunks: LLMResponse[] = [];
   for await (const chunk of stream) chunks.push(chunk);
@@ -412,7 +469,41 @@ test('OpenAI SSE handles split UTF-8, argument deltas, usage and the terminal se
   assert.deepEqual(chunks.at(-1)?.usage, expectedUsage);
 });
 
-test('Anthropic SSE uses Messages events and emits per-call totals without double-counting', async (t) => {
+test('OpenAI SSE leaves empty tool arguments intact when generation ends at the token limit', async (t) => {
+  mockHttp(t, (url) =>
+    url.pathname === '/v2/lm/deployments'
+      ? list()
+      : sse(
+          sseFrames(
+            {
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        index: 0,
+                        id: 'truncated',
+                        function: { name: 'lookup', arguments: '' },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+            { choices: [{ finish_reason: 'length' }] },
+            '[DONE]',
+          ),
+        ),
+  );
+  const chunks = await collect(provider().streamChat(messages, tools));
+  assert.equal(chunks.at(-1)?.finishReason, 'length');
+  assert.deepEqual(
+    chunks.flatMap((chunk) => chunk.toolCalls ?? []),
+    [{ index: 0, id: 'truncated', name: 'lookup', arguments: '' }],
+  );
+});
+
+async function checkAnthropicStream(t: TestContext, wire: string) {
   const records: UsageInput[] = [];
   const usage: IUsageRecorder = {
     record(input) {
@@ -442,54 +533,68 @@ test('Anthropic SSE uses Messages events and emits per-call totals without doubl
         cache_control: { type: 'ephemeral' },
       },
     ]);
-    return sse(
-      sseFrames(
-        {
-          type: 'message_start',
-          message: { usage: { ...anthropicUsage, output_tokens: 1 } },
+    const events = [
+      {
+        type: 'message_start',
+        message: { usage: { ...anthropicUsage, output_tokens: 1 } },
+      },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'Hello 🌍' },
+      },
+      {
+        type: 'content_block_start',
+        index: 1,
+        content_block: {
+          type: 'tool_use',
+          id: 'empty',
+          name: 'lookup',
+          input: {},
         },
-        {
-          type: 'content_block_delta',
-          index: 0,
-          delta: { type: 'text_delta', text: 'Hello 🌍' },
+      },
+      { type: 'content_block_stop', index: 1 },
+      {
+        type: 'content_block_start',
+        index: 2,
+        content_block: {
+          type: 'tool_use',
+          id: 'filled',
+          name: 'lookup',
+          input: {},
         },
-        {
-          type: 'content_block_start',
-          index: 1,
-          content_block: {
-            type: 'tool_use',
-            id: 'empty',
-            name: 'lookup',
-            input: {},
-          },
-        },
-        { type: 'content_block_stop', index: 1 },
-        {
-          type: 'content_block_start',
-          index: 2,
-          content_block: {
-            type: 'tool_use',
-            id: 'filled',
-            name: 'lookup',
-            input: {},
-          },
-        },
-        {
-          type: 'content_block_delta',
-          index: 2,
-          delta: { type: 'input_json_delta', partial_json: '{"x":1}' },
-        },
-        { type: 'content_block_stop', index: 2 },
-        {
-          type: 'message_delta',
-          delta: { stop_reason: 'tool_use' },
-          usage: anthropicUsage,
-        },
-        {
-          type: 'message_stop',
-          'amazon-bedrock-invocationMetrics': { outputTokenCount: 4 },
-        },
+      },
+      {
+        type: 'content_block_delta',
+        index: 2,
+        delta: { type: 'input_json_delta', partial_json: '{"x":1}' },
+      },
+      { type: 'content_block_stop', index: 2 },
+      {
+        type: 'message_delta',
+        delta: { stop_reason: 'tool_use' },
+        usage: anthropicUsage,
+      },
+      {
+        type: 'message_stop',
+        'amazon-bedrock-invocationMetrics': { outputTokenCount: 4 },
+      },
+    ];
+    if (wire === 'SSE') return sse(sseFrames(...events));
+    const frames = Buffer.concat(
+      events.map((event) =>
+        awsFrame({
+          bytes: Buffer.from(JSON.stringify(event)).toString('base64'),
+        }),
       ),
+    );
+    // Split the prelude, headers and payload, then deliver several frames at once.
+    return awsResponse(
+      frames.subarray(0, 2),
+      frames.subarray(2, 10),
+      frames.subarray(10, 23),
+      frames.subarray(23, 110),
+      frames.subarray(110),
     );
   });
   const chunks = await collect(
@@ -521,6 +626,89 @@ test('Anthropic SSE uses Messages events and emits per-call totals without doubl
   assert.equal(record.outputTokens, 4);
   assert.equal(record.cachedInputTokens, 8);
   assert.equal(record.cacheCreationInputTokens, 2);
+}
+
+for (const wire of ['SSE', 'AWS event stream']) {
+  test(`Anthropic ${wire} maps Messages events and emits per-call totals without double-counting`, (t) =>
+    checkAnthropicStream(t, wire));
+}
+
+test('AWS event stream rejects invalid prelude and message CRCs and incomplete frames', async (t) => {
+  const valid = awsFrame({
+    bytes: Buffer.from(JSON.stringify({ type: 'message_stop' })).toString(
+      'base64',
+    ),
+  });
+  const badPrelude = Buffer.from(valid);
+  badPrelude[11] ^= 1;
+  const badMessage = Buffer.from(valid);
+  badMessage[badMessage.length - 1] ^= 1;
+  let body: Uint8Array = valid;
+  mockHttp(t, (url) =>
+    url.pathname === '/v2/lm/deployments' ? list() : awsResponse(body),
+  );
+  const llm = provider(anthropicModel, { maxTokens: 100 });
+  for (const [bytes, message] of [
+    [badPrelude, /prelude CRC/],
+    [badMessage, /message CRC/],
+    [valid.subarray(0, -1), /Incomplete AWS event stream frame/],
+  ] as const) {
+    body = bytes;
+    await assert.rejects(collect(llm.streamChat(messages)), {
+      name: LlmError.name,
+      message,
+    });
+  }
+});
+
+test('Anthropic preserves typed context overflow from an AWS exception frame', async (t) => {
+  const frame = awsFrame(
+    { message: 'prompt is too long' },
+    {
+      ':message-type': 'exception',
+      ':exception-type': 'validationException',
+      ':content-type': 'application/json',
+    },
+  );
+  mockHttp(t, (url) =>
+    url.pathname === '/v2/lm/deployments' ? list() : awsResponse(frame),
+  );
+  await assert.rejects(
+    collect(provider(anthropicModel, { maxTokens: 100 }).streamChat(messages)),
+    (error) =>
+      error instanceof LlmError && error.code === MODEL_CONTEXT_EXCEEDED,
+  );
+});
+
+test('foundation reports an unsupported or missing stream content type as a failed request', async (t) => {
+  const records: UsageInput[] = [];
+  const usage: IUsageRecorder = {
+    record: (record) => records.push(record),
+    with: () => usage,
+  };
+  let type: string | undefined;
+  mockHttp(t, (url) => {
+    if (url.pathname === '/v2/lm/deployments') return list();
+    const body = new Uint8Array();
+    return new Response(body, {
+      headers: type ? { 'Content-Type': type } : {},
+    });
+  });
+  for (const model of [openAIModel, anthropicModel]) {
+    const llm = provider(model, { maxTokens: 100, usage });
+    for (type of [undefined, 'application/json']) {
+      await assert.rejects(
+        collect(llm.streamChat(messages)),
+        (error) =>
+          error instanceof LlmError &&
+          /stream content type/.test(error.message),
+      );
+    }
+  }
+  assert.deepEqual(
+    records.map((record) => [record.kind, record.outcome]),
+    Array.from({ length: 4 }, () => ['llm.call', 'error']),
+  );
 });
 
 for (const [model, overflow] of [
@@ -591,6 +779,60 @@ function deferred<T>() {
     resolve = fulfill;
   });
   return { promise, resolve };
+}
+
+for (const stream of [false, true]) {
+  test(`foundation gives recognized context overflow precedence over a later abort (stream=${stream})`, async (t) => {
+    const controller = new AbortController();
+    const response = Response.json(
+      { error: { code: 'context_length_exceeded' } },
+      { status: 400 },
+    );
+    const readBody = response.text.bind(response);
+    t.mock.method(response, 'text', async () => {
+      const body = await readBody();
+      controller.abort(new Error('Cancelled'));
+      return body;
+    });
+    mockHttp(t, (url) =>
+      url.pathname === '/v2/lm/deployments' ? list() : response,
+    );
+    const llm = provider();
+    const options = { signal: controller.signal };
+    await assert.rejects(
+      stream
+        ? collect(llm.streamChat(messages, undefined, options))
+        : llm.chat(messages, undefined, options),
+      (error) =>
+        error instanceof LlmError && error.code === MODEL_CONTEXT_EXCEEDED,
+    );
+    assert.equal(controller.signal.aborted, true);
+  });
+
+  test(`foundation records no physical request if bearer credential acquisition fails (stream=${stream})`, async (t) => {
+    const records: UsageInput[] = [];
+    const usage: IUsageRecorder = {
+      record: (record) => records.push(record),
+      with: () => usage,
+    };
+    const token = t.mock.fn(async () => {
+      throw new Error('Credential rejected');
+    });
+    const fetch = t.mock.method(globalThis, 'fetch', () => {
+      throw new Error('Unexpected HTTP request');
+    });
+    const llm = provider(openAIModel, {
+      credential: { kind: 'bearer', token },
+      usage,
+    });
+    await assert.rejects(
+      stream ? collect(llm.streamChat(messages)) : llm.chat(messages),
+      LlmError,
+    );
+    assert.equal(token.mock.callCount(), 1);
+    assert.equal(fetch.mock.callCount(), 0);
+    assert.deepEqual(records, []);
+  });
 }
 
 test('abort during credential resolution prevents HTTP requests', async (t) => {

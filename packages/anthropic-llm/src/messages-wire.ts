@@ -282,7 +282,7 @@ export function requestBody(
   const cacheControl: CacheControl = { type: 'ephemeral' };
   return {
     messages: sent,
-    system,
+    ...(system !== undefined ? { system } : {}),
     max_tokens: options.maxTokens,
     ...(options.temperature !== undefined
       ? { temperature: options.temperature }
@@ -386,7 +386,10 @@ export interface AnthropicStreamEvent extends AnthropicErrorResponse {
   usage?: AnthropicUsage;
 }
 
-export function chatResponse(raw: AnthropicChatResponse): LLMResponse {
+export function chatResponse(
+  raw: AnthropicChatResponse,
+  options?: { defaultToolInput?: boolean },
+): LLMResponse {
   const toolCalls: NonNullable<LLMResponse['toolCalls']> = [];
   let textContent = '';
   for (const block of raw.content) {
@@ -396,7 +399,9 @@ export function chatResponse(raw: AnthropicChatResponse): LLMResponse {
         index: toolCalls.length,
         id: block.id,
         name: block.name,
-        arguments: JSON.stringify(block.input ?? {}),
+        arguments: JSON.stringify(
+          options?.defaultToolInput ? (block.input ?? {}) : block.input,
+        ),
       });
     }
   }
@@ -443,6 +448,8 @@ export class AnthropicStreamMapper {
     { index: number; input: Json; hasArguments: boolean }
   >();
 
+  constructor(private readonly options?: { deltaUsage?: boolean }) {}
+
   tokenFacts(): Partial<LlmRequestFacts> {
     return tokenFacts(this.usage);
   }
@@ -460,20 +467,29 @@ export class AnthropicStreamMapper {
         cache_read_input_tokens,
         cache_creation_input_tokens,
       } = currentUsage;
-      // Messages events report cumulative counts. The agent sums usage chunks.
-      usage = normalizedUsage({
-        input_tokens: tokenDelta(input_tokens, this.usage.input_tokens),
-        output_tokens: tokenDelta(output_tokens, this.usage.output_tokens),
-        cache_read_input_tokens: tokenDelta(
-          cache_read_input_tokens,
-          this.usage.cache_read_input_tokens,
-        ),
-        cache_creation_input_tokens: tokenDelta(
-          cache_creation_input_tokens,
-          this.usage.cache_creation_input_tokens,
-        ),
-      });
-      this.usage = { ...this.usage, ...currentUsage };
+      if (this.options?.deltaUsage) {
+        // Bedrock reports cumulative counts. The agent sums usage chunks.
+        usage = normalizedUsage({
+          input_tokens: tokenDelta(input_tokens, this.usage.input_tokens),
+          output_tokens: tokenDelta(output_tokens, this.usage.output_tokens),
+          cache_read_input_tokens: tokenDelta(
+            cache_read_input_tokens,
+            this.usage.cache_read_input_tokens,
+          ),
+          cache_creation_input_tokens: tokenDelta(
+            cache_creation_input_tokens,
+            this.usage.cache_creation_input_tokens,
+          ),
+        });
+      }
+      this.usage = {
+        input_tokens: input_tokens ?? this.usage.input_tokens,
+        output_tokens: output_tokens ?? this.usage.output_tokens,
+        cache_read_input_tokens:
+          cache_read_input_tokens ?? this.usage.cache_read_input_tokens,
+        cache_creation_input_tokens:
+          cache_creation_input_tokens ?? this.usage.cache_creation_input_tokens,
+      };
     }
 
     const response = { content: '', raw };
@@ -513,8 +529,8 @@ export class AnthropicStreamMapper {
         toolCalls: [{ index: tool.index, arguments: delta.partial_json ?? '' }],
       };
     }
-    if (eventType === 'content_block_stop' && index !== undefined) {
-      this.tools.delete(index);
+    if (eventType === 'content_block_stop') {
+      if (index !== undefined) this.tools.delete(index);
       if (!tool || tool.hasArguments) return;
       return {
         ...response,
@@ -524,12 +540,26 @@ export class AnthropicStreamMapper {
       };
     }
     if (eventType === 'message_delta') {
+      if (!this.options?.deltaUsage && raw.usage) {
+        const completionTokens = raw.usage.output_tokens ?? 0;
+        usage = {
+          promptTokens: 0,
+          completionTokens,
+          totalTokens: completionTokens,
+        };
+      }
       return {
         ...response,
         finishReason: normalizeStopReason(delta?.stop_reason),
         usage,
       };
     }
+    if (
+      !this.options?.deltaUsage &&
+      eventType === 'message_start' &&
+      raw.message?.usage
+    )
+      usage = normalizedUsage(raw.message.usage);
     return usage ? { ...response, usage } : response;
   }
 }
