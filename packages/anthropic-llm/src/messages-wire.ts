@@ -454,12 +454,11 @@ export function withUsageFallback(
 ): AnthropicUsage {
   return {
     ...usage,
-    input_tokens:
-      usage?.input_tokens ||
-      cumulativeCount(usage?.input_tokens, fallback.input_tokens),
-    output_tokens:
-      usage?.output_tokens ||
-      cumulativeCount(usage?.output_tokens, fallback.output_tokens),
+    input_tokens: cumulativeCount(usage?.input_tokens, fallback.input_tokens),
+    output_tokens: cumulativeCount(
+      usage?.output_tokens,
+      fallback.output_tokens,
+    ),
   };
 }
 

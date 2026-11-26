@@ -445,8 +445,8 @@ test('Anthropic chat sends Bedrock messages, remaps historical tools and control
       ...(calls === 2
         ? {
             'amazon-bedrock-invocationMetrics': {
-              inputTokenCount: 16,
-              outputTokenCount: 9,
+              inputTokenCount: 5,
+              outputTokenCount: 3,
             },
           }
         : {}),
@@ -494,9 +494,12 @@ test('Anthropic chat sends Bedrock messages, remaps historical tools and control
   }
 });
 
-for (const usageField of [undefined, { input_tokens: 0, output_tokens: 0 }]) {
-  const label = usageField ? 'zero' : 'missing';
-  test(`Anthropic /invoke fills ${label} usage from Bedrock invocation metrics`, async (t) => {
+for (const [label, usageField] of [
+  ['missing', undefined],
+  ['zero', { input_tokens: 0, output_tokens: 0 }],
+  ['partial', { input_tokens: 120, output_tokens: 1 }],
+] as const) {
+  test(`Anthropic /invoke merges ${label} usage with Bedrock invocation metrics`, async (t) => {
     const { records, usage } = captureUsage();
     mockHttp(t, (url, init) => {
       if (url.pathname === '/v2/lm/deployments') return list();
@@ -755,7 +758,7 @@ async function checkAnthropicStream(t: TestContext, wire: string) {
         usage: { cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
         'amazon-bedrock-invocationMetrics': {
           inputTokenCount: 6,
-          outputTokenCount: 9,
+          outputTokenCount: 3,
         },
       },
     ];
@@ -807,9 +810,15 @@ for (const wire of ['SSE', 'AWS event stream']) {
   test(`Anthropic ${wire} maps Messages events and emits per-call totals without double-counting`, (t) =>
     checkAnthropicStream(t, wire));
 
-  for (const inputTokens of [123, 0, undefined]) {
-    const label = inputTokens === undefined ? 'missing' : inputTokens;
-    test(`Anthropic ${wire} accounts for ${label} initial input tokens with final Bedrock metrics`, async (t) => {
+  const finalUsage = { input_tokens: 0, output_tokens: 9 };
+  for (const [label, inputTokens, deltaUsage] of [
+    ['positive initial input', 123, finalUsage],
+    ['zero initial usage', 0, { input_tokens: 0, output_tokens: 0 }],
+    ['missing initial input', undefined, finalUsage],
+    ['zero final output', 123, { output_tokens: 0 }],
+    ['missing final usage', 123, undefined],
+  ] as const) {
+    test(`Anthropic ${wire} merges ${label} with final Bedrock metrics`, async (t) => {
       const { records, usage } = captureUsage();
       let posts = 0;
       mockHttp(t, (url, init) => {
@@ -820,20 +829,19 @@ for (const wire of ['SSE', 'AWS event stream']) {
         );
         assert.equal(init?.method, 'POST');
         posts++;
-        const outputTokens = inputTokens === 0 ? 0 : 9;
         const events = [
           {
             type: 'message_start',
             message: {
               usage: {
                 input_tokens: inputTokens,
-                output_tokens: outputTokens ? 1 : 0,
+                output_tokens: inputTokens === 0 ? 0 : 1,
               },
             },
           },
           {
             type: 'message_delta',
-            usage: { input_tokens: 0, output_tokens: outputTokens },
+            usage: deltaUsage,
           },
           {
             type: 'message_stop',

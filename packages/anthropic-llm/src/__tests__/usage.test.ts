@@ -109,6 +109,30 @@ it('emits only increases across partial, empty, lower and repeated cumulative us
   assert.equal(mapper.tokenFacts().outputTokens, 9);
 });
 
+for (const usage of [{ output_tokens: 0 }, undefined]) {
+  const label = usage ? 'zero output' : 'missing usage';
+  it(`merges final Bedrock metrics after a message_delta with ${label}`, () => {
+    const mapper = new AnthropicStreamMapper({ deltaUsage: true });
+    assert.deepEqual(
+      mapper.map({
+        type: 'message_start',
+        message: { usage: { input_tokens: 123, output_tokens: 1 } },
+      })?.usage,
+      { promptTokens: 123, completionTokens: 1, totalTokens: 124 },
+    );
+    mapper.map({ type: 'message_delta', usage });
+    assert.deepEqual(
+      mapper.map({ type: 'message_stop' }, 'message_stop', {
+        input_tokens: 123,
+        output_tokens: 9,
+      })?.usage,
+      { promptTokens: 0, completionTokens: 8, totalTokens: 8 },
+    );
+    assert.equal(mapper.tokenFacts().inputTokens, 123);
+    assert.equal(mapper.tokenFacts().outputTokens, 9);
+  });
+}
+
 it('records exact usage and per-call override of a bound recorder', async (t) => {
   const records: Record[] = [];
   const overrides: Record[] = [];
