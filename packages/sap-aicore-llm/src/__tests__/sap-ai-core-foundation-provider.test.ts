@@ -170,6 +170,12 @@ function awsResponse(...parts: Uint8Array[]) {
   );
 }
 
+function bedrockFrame(event: object) {
+  return awsFrame({
+    bytes: Buffer.from(JSON.stringify(event)).toString('base64'),
+  });
+}
+
 async function collect(stream: AsyncIterable<LLMResponse>) {
   const chunks: LLMResponse[] = [];
   for await (const chunk of stream) chunks.push(chunk);
@@ -373,6 +379,7 @@ test('OpenAI chat sends native messages and tools, then maps the response and ca
 
 test('Anthropic chat sends Bedrock messages, remaps historical tools and controls cache breakpoints', async (t) => {
   let calls = 0;
+  const { records, usage } = captureUsage();
   mockHttp(t, (url, init) => {
     if (url.pathname === '/v2/lm/deployments') return list();
     assert.equal(url.href, `${deploymentUrl}claude/invoke`);
@@ -435,11 +442,20 @@ test('Anthropic chat sends Bedrock messages, remaps historical tools and control
       ],
       stop_reason: 'tool_use',
       usage: anthropicUsage,
+      ...(calls === 2
+        ? {
+            'amazon-bedrock-invocationMetrics': {
+              inputTokenCount: 5,
+              outputTokenCount: 3,
+            },
+          }
+        : {}),
     });
   });
   const llm = provider(anthropicModel, {
     maxTokens: 300,
     promptCaching: false,
+    usage,
   });
   const history = [
     ...messages,
@@ -460,7 +476,7 @@ test('Anthropic chat sends Bedrock messages, remaps historical tools and control
       tool_call_id: 'invalid.id',
     },
   ];
-  await llm.chat(history, tools);
+  assert.deepEqual((await llm.chat(history, tools)).usage, expectedUsage);
   const result = await llm.chat(history, tools, { promptCaching: true });
   assert.equal(result.content, 'Checking.');
   assert.equal(result.finishReason, 'tool_calls');
@@ -468,7 +484,53 @@ test('Anthropic chat sends Bedrock messages, remaps historical tools and control
     { index: 0, id: 'call_b', name: 'lookup', arguments: '{}' },
   ]);
   assert.deepEqual(result.usage, expectedUsage);
+  assert.equal(records.length, 2);
+  for (const record of records) {
+    assert.equal(record.kind, 'llm.call');
+    assert.equal(record.inputTokens, 6);
+    assert.equal(record.outputTokens, 4);
+    assert.equal(record.cachedInputTokens, 8);
+    assert.equal(record.cacheCreationInputTokens, 2);
+  }
 });
+
+for (const [label, usageField] of [
+  ['missing', undefined],
+  ['zero', { input_tokens: 0, output_tokens: 0 }],
+  ['partial', { input_tokens: 120, output_tokens: 1 }],
+] as const) {
+  test(`Anthropic /invoke merges ${label} usage with Bedrock invocation metrics`, async (t) => {
+    const { records, usage } = captureUsage();
+    mockHttp(t, (url, init) => {
+      if (url.pathname === '/v2/lm/deployments') return list();
+      assert.equal(url.href, `${deploymentUrl}claude/invoke`);
+      assert.equal(init?.method, 'POST');
+      return Response.json({
+        content: [{ type: 'text', text: 'Hello' }],
+        usage: usageField,
+        'amazon-bedrock-invocationMetrics': {
+          inputTokenCount: 123,
+          outputTokenCount: 9,
+        },
+      });
+    });
+    const result = await provider(anthropicModel, {
+      maxTokens: 300,
+      usage,
+    }).chat(messages);
+    assert.deepEqual(result.usage, {
+      promptTokens: 123,
+      completionTokens: 9,
+      totalTokens: 132,
+    });
+    assert.equal(records.length, 1);
+    const record = records[0];
+    assert.equal(record.kind, 'llm.call');
+    assert.equal(record.outcome, 'ok');
+    assert.equal(record.inputTokens, 123);
+    assert.equal(record.outputTokens, 9);
+  });
+}
 
 test('OpenAI SSE handles split UTF-8, argument deltas, usage and the terminal sentinel', async (t) => {
   mockHttp(t, (url, init) => {
@@ -650,7 +712,9 @@ async function checkAnthropicStream(t: TestContext, wire: string) {
     const events = [
       {
         type: 'message_start',
-        message: { usage: { ...anthropicUsage, output_tokens: 1 } },
+        message: {
+          usage: { ...anthropicUsage, input_tokens: 0, output_tokens: 1 },
+        },
       },
       {
         type: 'content_block_delta',
@@ -691,18 +755,15 @@ async function checkAnthropicStream(t: TestContext, wire: string) {
       },
       {
         type: 'message_stop',
-        usage: {},
-        'amazon-bedrock-invocationMetrics': { outputTokenCount: 4 },
+        usage: { cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        'amazon-bedrock-invocationMetrics': {
+          inputTokenCount: 6,
+          outputTokenCount: 3,
+        },
       },
     ];
     if (wire === 'SSE') return sse(sseFrames(...events));
-    const frames = Buffer.concat(
-      events.map((event) =>
-        awsFrame({
-          bytes: Buffer.from(JSON.stringify(event)).toString('base64'),
-        }),
-      ),
-    );
+    const frames = Buffer.concat(events.map(bedrockFrame));
     // Split the prelude, headers and payload, then deliver several frames at once.
     return awsResponse(
       frames.subarray(0, 2),
@@ -748,6 +809,78 @@ async function checkAnthropicStream(t: TestContext, wire: string) {
 for (const wire of ['SSE', 'AWS event stream']) {
   test(`Anthropic ${wire} maps Messages events and emits per-call totals without double-counting`, (t) =>
     checkAnthropicStream(t, wire));
+
+  const finalUsage = { input_tokens: 0, output_tokens: 9 };
+  for (const [label, inputTokens, deltaUsage] of [
+    ['positive initial input', 123, finalUsage],
+    ['zero initial usage', 0, { input_tokens: 0, output_tokens: 0 }],
+    ['missing initial input', undefined, finalUsage],
+    ['zero final output', 123, { output_tokens: 0 }],
+    ['missing final usage', 123, undefined],
+  ] as const) {
+    test(`Anthropic ${wire} merges ${label} with final Bedrock metrics`, async (t) => {
+      const { records, usage } = captureUsage();
+      let posts = 0;
+      mockHttp(t, (url, init) => {
+        if (url.pathname === '/v2/lm/deployments') return list();
+        assert.equal(
+          url.href,
+          `${deploymentUrl}claude/invoke-with-response-stream`,
+        );
+        assert.equal(init?.method, 'POST');
+        posts++;
+        const events = [
+          {
+            type: 'message_start',
+            message: {
+              usage: {
+                input_tokens: inputTokens,
+                output_tokens: inputTokens === 0 ? 0 : 1,
+              },
+            },
+          },
+          {
+            type: 'message_delta',
+            usage: deltaUsage,
+          },
+          {
+            type: 'message_stop',
+            'amazon-bedrock-invocationMetrics': {
+              inputTokenCount: 123,
+              outputTokenCount: 9,
+            },
+          },
+        ];
+        return wire === 'SSE'
+          ? sse(sseFrames(...events))
+          : awsResponse(...events.map(bedrockFrame));
+      });
+      const chunks = await collect(
+        provider(anthropicModel, { maxTokens: 300, usage }).streamChat(
+          messages,
+        ),
+      );
+      const totals = chunks
+        .map((chunk) => chunk.usage)
+        .reduce(addTokenUsage, undefined);
+      assert.deepEqual(totals, {
+        promptTokens: 123,
+        completionTokens: 9,
+        totalTokens: 132,
+      });
+      for (const { usage } of chunks) {
+        assert.ok((usage?.promptTokens ?? 0) >= 0);
+        assert.ok((usage?.completionTokens ?? 0) >= 0);
+      }
+      assert.equal(posts, 1);
+      assert.equal(records.length, 1);
+      const record = records[0];
+      assert.equal(record.kind, 'llm.call');
+      assert.equal(record.outcome, 'ok');
+      assert.equal(record.inputTokens, 123);
+      assert.equal(record.outputTokens, 9);
+    });
+  }
 }
 
 test('AWS event stream rejects invalid prelude and message CRCs and incomplete frames', async (t) => {
