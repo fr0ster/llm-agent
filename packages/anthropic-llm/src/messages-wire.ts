@@ -437,7 +437,30 @@ export function tokenFacts(usage?: AnthropicUsage): Partial<LlmRequestFacts> {
 }
 
 function tokenDelta(current: number | undefined, previous: number | undefined) {
-  return current === undefined ? undefined : current - (previous ?? 0);
+  return current === previous || current === undefined
+    ? undefined
+    : current - (previous ?? 0);
+}
+
+function cumulativeCount(previous?: number, current?: number) {
+  return current == null ? previous : Math.max(previous ?? 0, current);
+}
+
+type UsageFallback = Pick<AnthropicUsage, 'input_tokens' | 'output_tokens'>;
+
+export function withUsageFallback(
+  usage: AnthropicUsage | undefined,
+  fallback: UsageFallback,
+): AnthropicUsage {
+  return {
+    ...usage,
+    input_tokens:
+      usage?.input_tokens ||
+      cumulativeCount(usage?.input_tokens, fallback.input_tokens),
+    output_tokens:
+      usage?.output_tokens ||
+      cumulativeCount(usage?.output_tokens, fallback.output_tokens),
+  };
 }
 
 export class AnthropicStreamMapper {
@@ -457,42 +480,57 @@ export class AnthropicStreamMapper {
   map(
     raw: AnthropicStreamEvent,
     eventType = raw.type,
+    fallbackUsage?: UsageFallback,
   ): LLMResponse | undefined {
     const currentUsage = raw.message?.usage ?? raw.usage;
     let usage: LLMResponse['usage'];
-    if (currentUsage) {
-      const {
-        input_tokens,
-        output_tokens,
-        cache_read_input_tokens,
-        cache_creation_input_tokens,
-      } = currentUsage;
+    if (currentUsage || fallbackUsage) {
+      const previous = this.usage;
+      const merged = {
+        input_tokens: cumulativeCount(
+          previous.input_tokens,
+          currentUsage?.input_tokens,
+        ),
+        output_tokens: cumulativeCount(
+          previous.output_tokens,
+          currentUsage?.output_tokens,
+        ),
+        cache_read_input_tokens: cumulativeCount(
+          previous.cache_read_input_tokens,
+          currentUsage?.cache_read_input_tokens,
+        ),
+        cache_creation_input_tokens: cumulativeCount(
+          previous.cache_creation_input_tokens,
+          currentUsage?.cache_creation_input_tokens,
+        ),
+      };
+      this.usage = fallbackUsage
+        ? withUsageFallback(merged, fallbackUsage)
+        : merged;
       if (this.options?.deltaUsage) {
         // Bedrock reports cumulative counts. The agent sums usage chunks.
         usage = normalizedUsage({
-          input_tokens: tokenDelta(input_tokens, this.usage.input_tokens),
-          output_tokens: tokenDelta(output_tokens, this.usage.output_tokens),
+          input_tokens: tokenDelta(
+            this.usage.input_tokens,
+            previous.input_tokens,
+          ),
+          output_tokens: tokenDelta(
+            this.usage.output_tokens,
+            previous.output_tokens,
+          ),
           cache_read_input_tokens: tokenDelta(
-            cache_read_input_tokens,
             this.usage.cache_read_input_tokens,
+            previous.cache_read_input_tokens,
           ),
           cache_creation_input_tokens: tokenDelta(
-            cache_creation_input_tokens,
             this.usage.cache_creation_input_tokens,
+            previous.cache_creation_input_tokens,
           ),
         });
       }
-      this.usage = {
-        input_tokens: input_tokens ?? this.usage.input_tokens,
-        output_tokens: output_tokens ?? this.usage.output_tokens,
-        cache_read_input_tokens:
-          cache_read_input_tokens ?? this.usage.cache_read_input_tokens,
-        cache_creation_input_tokens:
-          cache_creation_input_tokens ?? this.usage.cache_creation_input_tokens,
-      };
     }
 
-    const response = { content: '', raw };
+    const response = { content: '', raw, ...(usage ? { usage } : {}) };
     const block = raw.content_block;
     const delta = raw.delta;
     const index = raw.index;
@@ -522,7 +560,7 @@ export class AnthropicStreamMapper {
       eventType === 'content_block_delta' &&
       delta?.type === 'input_json_delta'
     ) {
-      if (!tool) return;
+      if (!tool) return usage ? response : undefined;
       if (delta.partial_json) tool.hasArguments = true;
       return {
         ...response,
@@ -531,7 +569,7 @@ export class AnthropicStreamMapper {
     }
     if (eventType === 'content_block_stop') {
       if (index !== undefined) this.tools.delete(index);
-      if (!tool || tool.hasArguments) return;
+      if (!tool || tool.hasArguments) return usage ? response : undefined;
       return {
         ...response,
         toolCalls: [
@@ -559,7 +597,7 @@ export class AnthropicStreamMapper {
       eventType === 'message_start' &&
       raw.message?.usage
     )
-      usage = normalizedUsage(raw.message.usage);
-    return usage ? { ...response, usage } : response;
+      return { ...response, usage: normalizedUsage(raw.message.usage) };
+    return response;
   }
 }

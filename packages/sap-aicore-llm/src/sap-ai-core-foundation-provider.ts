@@ -52,6 +52,13 @@ interface Deployment {
   url: string;
 }
 
+interface BedrockUsageEnvelope {
+  'amazon-bedrock-invocationMetrics'?: {
+    inputTokenCount?: number;
+    outputTokenCount?: number;
+  };
+}
+
 const OPENAI_PATH = '/chat/completions?api-version=2024-10-21';
 const PROVIDER_ID = 'sap-aicore-foundation';
 const SSE = 'text/event-stream';
@@ -62,6 +69,20 @@ class StaleDeploymentError extends LlmError {
   constructor() {
     super('SAP AI Core foundation request failed (HTTP 404)');
   }
+}
+
+function bedrockUsageFallback(wire: BedrockUsageEnvelope) {
+  const metrics = wire['amazon-bedrock-invocationMetrics'];
+  if (
+    metrics?.inputTokenCount === undefined &&
+    metrics?.outputTokenCount === undefined
+  )
+    return;
+  // Bedrock reports uncached input separately from cache reads and writes.
+  return {
+    input_tokens: metrics.inputTokenCount,
+    output_tokens: metrics.outputTokenCount,
+  };
 }
 
 async function* readStream(
@@ -430,10 +451,21 @@ export class SapAiCoreFoundationProvider extends BaseLLMProvider<SapAiCoreFounda
           let facts: Partial<LlmRequestFacts>;
           if (request.family === 'anthropic') {
             const wire =
-              (await response.json()) as anthropic.AnthropicChatResponse;
+              (await response.json()) as anthropic.AnthropicChatResponse &
+                BedrockUsageEnvelope;
             if (wire.error) throw modelError(wire.error.message);
-            mapped = anthropic.chatResponse(wire, { defaultToolInput: true });
-            facts = anthropic.tokenFacts(wire.usage);
+            const fallback = bedrockUsageFallback(wire);
+            const tokenUsage = fallback
+              ? anthropic.withUsageFallback(wire.usage, fallback)
+              : wire.usage;
+            mapped = {
+              ...anthropic.chatResponse(
+                { ...wire, usage: tokenUsage },
+                { defaultToolInput: true },
+              ),
+              raw: wire,
+            };
+            facts = anthropic.tokenFacts(tokenUsage);
           } else {
             const wire = (await response.json()) as openai.OpenAIChatResponse;
             if (wire.error)
@@ -492,12 +524,17 @@ export class SapAiCoreFoundationProvider extends BaseLLMProvider<SapAiCoreFounda
         )) {
           if (event.data === '[DONE]') break;
           if (request.family === 'anthropic') {
-            const wire: anthropic.AnthropicStreamEvent = JSON.parse(event.data);
+            const wire: anthropic.AnthropicStreamEvent & BedrockUsageEnvelope =
+              JSON.parse(event.data);
             const kind = wire.type ?? event.type;
             if (wire.error || kind === 'error') {
               throw modelError(wire.error?.message);
             }
-            const mapped = anthropicMapper.map(wire, kind);
+            const mapped = anthropicMapper.map(
+              wire,
+              kind,
+              bedrockUsageFallback(wire),
+            );
             facts = anthropicMapper.tokenFacts();
             if (mapped) {
               if (mapped.content || mapped.toolCalls?.length)

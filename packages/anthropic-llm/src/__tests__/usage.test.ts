@@ -11,6 +11,7 @@ import {
   WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
 import { AnthropicProvider } from '../anthropic-provider.js';
+import { AnthropicStreamMapper } from '../messages-wire.js';
 
 type Record = Extract<UsageInput, { kind: 'llm.call' }>;
 function recorder(records: Record[]): IUsageRecorder {
@@ -38,6 +39,76 @@ const delta =
   'event: content_block_delta\ndata: {"delta":{"type":"text_delta","text":"hello"}}\n\n';
 const end =
   'event: message_delta\ndata: {"usage":{"output_tokens":9},"delta":{"stop_reason":"end_turn"}}\n\n';
+
+for (const type of ['message_delta', 'message_stop']) {
+  it(`keeps positive cumulative counters when ${type} reports zero`, () => {
+    const mapper = new AnthropicStreamMapper({ deltaUsage: true });
+    const usage = {
+      input_tokens: 17,
+      output_tokens: 9,
+      cache_read_input_tokens: 4,
+      cache_creation_input_tokens: 2,
+    };
+    assert.deepEqual(
+      mapper.map({ type: 'message_start', message: { usage } })?.usage,
+      {
+        promptTokens: 23,
+        completionTokens: 9,
+        totalTokens: 32,
+        cachedInputTokens: 4,
+        cacheCreationInputTokens: 2,
+      },
+    );
+    const chunk = mapper.map({
+      type,
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      },
+    });
+    assert.deepEqual(chunk?.usage, {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+    });
+    assert.deepEqual(mapper.tokenFacts(), {
+      inputTokens: 17,
+      outputTokens: 9,
+      cachedInputTokens: 4,
+      cacheCreationInputTokens: 2,
+      tokensSource: 'provider',
+    });
+  });
+}
+
+it('emits only increases across partial, empty, lower and repeated cumulative usage', () => {
+  const mapper = new AnthropicStreamMapper({ deltaUsage: true });
+  mapper.map({
+    type: 'message_start',
+    message: { usage: { input_tokens: 17, output_tokens: 1 } },
+  });
+  assert.deepEqual(
+    mapper.map({ type: 'message_delta', usage: { output_tokens: 9 } })?.usage,
+    { promptTokens: 0, completionTokens: 8, totalTokens: 8 },
+  );
+  for (const usage of [
+    {},
+    { input_tokens: 16, output_tokens: 8 },
+    { input_tokens: 17, output_tokens: 9 },
+  ]) {
+    assert.deepEqual(mapper.map({ type: 'message_delta', usage })?.usage, {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+    });
+  }
+  assert.equal(mapper.map({ type: 'message_stop' })?.usage, undefined);
+  assert.equal(mapper.tokenFacts().inputTokens, 17);
+  assert.equal(mapper.tokenFacts().outputTokens, 9);
+});
+
 it('records exact usage and per-call override of a bound recorder', async (t) => {
   const records: Record[] = [];
   const overrides: Record[] = [];
