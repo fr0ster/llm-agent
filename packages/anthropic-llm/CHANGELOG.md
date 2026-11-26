@@ -1,5 +1,11 @@
 # @mcp-abap-adt/anthropic-llm
 
+## 31.2.1
+
+### Patch Changes
+
+- 509a702: Keep Anthropic cumulative token counts when later events report lower totals or omit counters. Fill missing SAP AI Core Bedrock input and output counts from invocation metrics in streams and JSON responses so returned usage agrees with per-request records.
+
 ## 31.2.0
 
 ### Minor Changes
