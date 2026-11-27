@@ -1,5 +1,13 @@
 # @mcp-abap-adt/hana-vector-rag
 
+## 33.0.4
+
+### Patch Changes
+
+- 53e6813: Fix vector queries on SAP HANA Cloud by extracting TTL metadata as a supported decimal type. Preserve signed fractional expiration times and keep records with missing or non-numeric TTLs eligible for search.
+  
+  Use plain table DDL for SAP HANA Cloud schema creation and collection deletion. Handle duplicate objects from concurrent schema setup and allow retries when a collection table is already gone.
+
 ## 33.0.3
 
 ### Patch Changes
