@@ -48,6 +48,7 @@ import { transactionalHanaClient } from './role-transaction.js';
 import { clearRecords, deleteWhere, scanPage } from './scan-delete.js';
 import {
   assertCollectionName,
+  execDdl,
   fragmentOrdinalMigrationSql,
   quoteIdent,
 } from './schema.js';
@@ -206,9 +207,9 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
     this.schemaPromise ??= (async () => {
       const client = await this.client();
       const ddl = this.sql.createTable();
-      if (ddl !== undefined) await client.exec(ddl);
+      if (ddl !== undefined) await execDdl(client, ddl, 'tableExists');
       this.schemaReady = true;
-    })().catch((err: unknown) => {
+    })().catch((err) => {
       // Not kept: like client(), the next use tries again.
       this.schemaPromise = undefined;
       throw err;
@@ -224,8 +225,10 @@ export class HanaVectorRag implements IRag, IRagScanner, IRagFilteredDeleter {
       return;
     this.ordinalSchema ??= (async () => {
       const client = await this.client();
-      await client.exec(
+      await execDdl(
+        client,
         fragmentOrdinalMigrationSql(this.connectConfig.collectionName),
+        'columnExists',
       );
     })().catch((error) => {
       this.ordinalSchema = undefined;

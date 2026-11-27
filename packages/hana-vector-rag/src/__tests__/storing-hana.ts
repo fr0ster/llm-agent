@@ -727,14 +727,15 @@ export function storingHana(opts: {
     params: readonly unknown[],
   ): { rows: Row[]; rowCount: number } => {
     statements.push(sql);
-    const clearTable = sql.match(
-      /^(TRUNCATE TABLE|DROP TABLE(?: IF EXISTS)?) "([^"]+)"$/,
-    );
+    const clearTable = sql.match(/^(TRUNCATE TABLE|DROP TABLE) "([^"]+)"$/);
     if (clearTable) {
-      const table = resolve({ name: clearTable[2] });
-      table.rows = [];
-      if (clearTable[1].startsWith('DROP TABLE'))
-        tables.delete(`${schema}.${clearTable[2]}`);
+      const [, action, name] = clearTable;
+      if (action === 'DROP TABLE') {
+        if (!tables.delete(`${schema}.${name}`))
+          throw Object.assign(new Error(`Invalid table name: ${name}`), {
+            code: 259,
+          });
+      } else resolve({ name }).rows = [];
       return { rows: [], rowCount: 0 };
     }
     if (sql.startsWith('LOCK TABLE')) return { rows: [], rowCount: 0 };
@@ -746,10 +747,11 @@ export function storingHana(opts: {
       snapshot = undefined;
       return { rows: [], rowCount: 0 };
     }
-    const create = /^CREATE TABLE (?:IF NOT EXISTS )?"([^"]+)"/.exec(sql);
+    const create = /^CREATE TABLE "([^"]+)"/.exec(sql);
     if (create) {
       const key = `${schema}.${create[1]}`;
-      if (tables.has(key)) throw new Error('Duplicate table');
+      if (tables.has(key))
+        throw Object.assign(new Error('Duplicate table'), { code: 288 });
       const columns = [
         ...sql.matchAll(
           /(?:\(|,)\s*([a-z_]+)\s+(?:NVARCHAR|NCLOB|TIMESTAMP|REAL_VECTOR|INTEGER)/g,
@@ -787,7 +789,7 @@ export function storingHana(opts: {
     if (alter) {
       const table = resolve({ name: alter[1] });
       if (table.columns.includes('ROLE_ID'))
-        throw new Error('Duplicate column');
+        throw Object.assign(new Error('Duplicate column'), { code: 308 });
       table.columns.push('ROLE_ID');
       for (const row of table.rows) row.ROLE_ID = null;
       return { rows: [], rowCount: 0 };

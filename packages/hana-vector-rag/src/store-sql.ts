@@ -220,8 +220,11 @@ function rankedSearch(
       );
     }
   }
+  // The 2026-11-27 SAP HANA Cloud probe confirmed that JSON_VALUE accepts
+  // only bare DECIMAL for decimal output. The floating-point decimal type
+  // preserves fractional and negative epoch seconds.
   conditions.push(
-    `COALESCE(CASE WHEN JSON_QUERY("METADATA", '$.ttl' WITH ARRAY WRAPPER) LIKE_REGEXPR '^\\[\\s*-?[0-9]' THEN JSON_VALUE("METADATA", '$.ttl' RETURNING DOUBLE) END, ?) >= ?`,
+    `COALESCE(CASE WHEN JSON_QUERY("METADATA", '$.ttl' WITH ARRAY WRAPPER) LIKE_REGEXPR '^\\[\\s*-?[0-9]' THEN JSON_VALUE("METADATA", '$.ttl' RETURNING DECIMAL) END, ?) >= ?`,
   );
   params.push(filter.nowSecs, filter.nowSecs);
   const documentScope =

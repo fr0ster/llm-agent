@@ -10,7 +10,11 @@ import {
 import { ragListConformanceCases } from '@mcp-abap-adt/llm-agent/testing/rag-list-conformance';
 import { createHanaClient, HanaVectorRag } from '../hana-vector-rag.js';
 import { HanaVectorRagProvider } from '../hana-vector-rag-provider.js';
-import { fragmentOrdinalMigrationSql } from '../schema.js';
+import {
+  dropTableSql,
+  execDdl,
+  fragmentOrdinalMigrationSql,
+} from '../schema.js';
 import { sharedLayoutSql } from '../shared-ddl.js';
 
 function isJsonArray(value: RagJsonValue): value is readonly RagJsonValue[] {
@@ -219,7 +223,7 @@ for (const layout of ['per-collection', 'shared'] as const)
       for (const provider of providers) provider.close();
       try {
         for (const table of tables.reverse())
-          await client.exec(`DROP TABLE IF EXISTS "${table}"`);
+          await execDdl(client, dropTableSql(table), 'tableMissing');
       } finally {
         await client.close();
       }

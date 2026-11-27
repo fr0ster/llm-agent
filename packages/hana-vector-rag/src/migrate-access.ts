@@ -2,7 +2,7 @@ import { RagError, type Result } from '@mcp-abap-adt/llm-agent';
 import { accessTableRuntimeDefinition, accessTables } from './access-ddl.js';
 import { createCatalogTableSql, tableExistsSql } from './catalog.js';
 import type { HanaVectorRagProvider } from './hana-vector-rag-provider.js';
-import { quoteIdent } from './schema.js';
+import { execDdl, quoteIdent } from './schema.js';
 
 export async function migrateHanaVectorRagAccess(
   provider: HanaVectorRagProvider,
@@ -25,11 +25,7 @@ export async function migrateHanaVectorRagAccess(
       ) > 0;
     const create = async (table: string, ddl: string) => {
       if (await exists(table)) return;
-      try {
-        await client.exec(ddl);
-      } catch (error) {
-        if (!(await exists(table))) throw error;
-      }
+      await execDdl(client, ddl, 'tableExists');
     };
     await create(catalogTable, createCatalogTableSql(catalogTable));
     const hasRole = async () =>
@@ -40,13 +36,11 @@ export async function migrateHanaVectorRagAccess(
         )
       ).length > 0;
     if (!(await hasRole())) {
-      try {
-        await client.exec(
-          `ALTER TABLE ${quoteIdent(catalogTable)} ADD (role_id NVARCHAR(5000))`,
-        );
-      } catch (error) {
-        if (!(await hasRole())) throw error;
-      }
+      await execDdl(
+        client,
+        `ALTER TABLE ${quoteIdent(catalogTable)} ADD (role_id NVARCHAR(5000))`,
+        'columnExists',
+      );
     }
     for (const table of accessTables) {
       await create(

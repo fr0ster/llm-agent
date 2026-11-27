@@ -63,10 +63,6 @@ describe('hana catalog: createCollection', () => {
     assert.equal(res.ok, true);
     const createdAt = at(fake, storeCreate);
     assert.ok(createdAt >= 0 && at(fake, recordInsert) > createdAt);
-    assert.equal(
-      at(fake, new RegExp(`CREATE TABLE IF NOT EXISTS "${STORE}"`)),
-      -1,
-    );
     const described = await providerOn(fake).describeCollections();
     assert.ok(described.ok);
     assert.deepEqual(described.value.records, [
@@ -296,7 +292,7 @@ describe('hana catalog: deleteCollection', () => {
     const recordAt = at(fake, new RegExp(`^DELETE FROM "${CATALOG}"`));
     assert.ok(
       recordAt >= 0 &&
-        at(fake, new RegExp(`^DROP TABLE IF EXISTS "${STORE}"`)) > recordAt,
+        at(fake, new RegExp(`^DROP TABLE "${STORE}"`)) > recordAt,
     );
   });
 

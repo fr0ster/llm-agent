@@ -54,6 +54,7 @@ import {
   assertCollectionName,
   createTableSql,
   dropTableSql,
+  execDdl,
   fragmentOrdinalMigrationSql,
   quoteIdent,
 } from './schema.js';
@@ -349,7 +350,7 @@ export class HanaVectorRagProvider
         this.cacheIdentity(name),
       );
       try {
-        await client.exec(dropTableSql(name));
+        await execDdl(client, dropTableSql(name), 'tableMissing');
       } finally {
         settled();
       }
@@ -396,23 +397,23 @@ export class HanaVectorRagProvider
     name: string,
     opts: RagProviderCreateCollectionOptions,
   ): Promise<Result<void, RagError>> {
-    try {
-      await client.exec(
-        createTableSql(name, this.dimension(), { ifNotExists: false }),
-      );
+    if (
+      await execDdl(
+        client,
+        createTableSql(name, this.dimension()),
+        'tableExists',
+      )
+    )
       return { ok: true, value: undefined };
-    } catch (err) {
-      if (!(await this.tableExists(client, name))) throw err;
-      if (await this.recordExists(client, name))
-        return this.duplicate(name, opts);
-      return {
-        ok: false,
-        error: new OrphanStoreError(
-          name,
-          'it exists without a record; another session may be creating or deleting this collection, so retry later, or take it over with adoptExisting, or remove it',
-        ),
-      };
-    }
+    if (await this.recordExists(client, name))
+      return this.duplicate(name, opts);
+    return {
+      ok: false,
+      error: new OrphanStoreError(
+        name,
+        'it exists without a record; another session may be creating or deleting this collection, so retry later, or take it over with adoptExisting, or remove it',
+      ),
+    };
   }
 
   private writeRecord(
@@ -522,7 +523,11 @@ export class HanaVectorRagProvider
       );
       if (Number(exists[0]?.n ?? 0) === 0) continue;
       if (this.layout === 'per-collection' && this.autoCreateSchema)
-        await client.exec(fragmentOrdinalMigrationSql(name));
+        await execDdl(
+          client,
+          fragmentOrdinalMigrationSql(name),
+          'columnExists',
+        );
       const collections =
         this.layout === 'shared'
           ? (
@@ -641,12 +646,12 @@ export class HanaVectorRagProvider
   private ensureCatalog(client: HanaClient): Promise<void> {
     this.catalogReady ??= (async () => {
       if (await this.tableExists(client, this.catalogTable)) return;
-      try {
-        await client.exec(createCatalogTableSql(this.catalogTable));
-      } catch (err) {
-        if (!(await this.tableExists(client, this.catalogTable))) throw err;
-      }
-    })().catch((err: unknown) => {
+      await execDdl(
+        client,
+        createCatalogTableSql(this.catalogTable),
+        'tableExists',
+      );
+    })().catch((err) => {
       this.catalogReady = undefined;
       throw err;
     });
