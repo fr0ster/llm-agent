@@ -39,12 +39,12 @@ describe('hana schema', () => {
 
   it('emits CREATE TABLE DDL with REAL_VECTOR and NCLOB', () => {
     const sql = createTableSql('llm_docs', 1536);
-    assert.match(sql, /CREATE TABLE IF NOT EXISTS "llm_docs"/);
+    assert.match(sql, /^CREATE TABLE "llm_docs"/);
     assert.match(sql, /REAL_VECTOR\(1536\)/);
     assert.match(sql, /metadata NCLOB/);
   });
 
-  it('emits DROP TABLE DDL with IF EXISTS', () => {
-    assert.equal(dropTableSql('llm_docs'), 'DROP TABLE IF EXISTS "llm_docs"');
+  it('emits plain DROP TABLE DDL', () => {
+    assert.equal(dropTableSql('llm_docs'), 'DROP TABLE "llm_docs"');
   });
 });

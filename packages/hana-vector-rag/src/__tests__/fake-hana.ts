@@ -57,15 +57,14 @@ function answer(
   if (sql.startsWith('SELECT COUNT(*) AS "n" FROM SYS.TABLES')) {
     return [{ n: fake.tables.has(String(params[params.length - 1])) ? 1 : 0 }];
   }
-  const create = sql.match(
-    /^CREATE (?:COLUMN )?TABLE (IF NOT EXISTS )?"([^"]+)"/,
-  );
+  const create = sql.match(/^CREATE (?:COLUMN )?TABLE "([^"]+)"/);
   if (create) {
-    const [, ifNotExists, table] = create;
-    if (fake.tables.has(table)) {
-      if (ifNotExists) return [];
-      throw new Error(`cannot use duplicate table name: ${table}`);
-    }
+    const [, table] = create;
+    if (fake.tables.has(table))
+      throw Object.assign(
+        new Error(`cannot use duplicate table name: ${table}`),
+        { code: 288 },
+      );
     fake.tables.add(table);
     return [];
   }
@@ -105,9 +104,12 @@ function answer(
     requireTable(fake, catalog);
     return fake.records.delete(String(params[0])) ? [{}] : [];
   }
-  const drop = sql.match(/^DROP TABLE IF EXISTS "([^"]+)"$/);
+  const drop = sql.match(/^DROP TABLE "([^"]+)"$/);
   if (drop) {
-    fake.tables.delete(drop[1]);
+    if (!fake.tables.delete(drop[1]))
+      throw Object.assign(new Error(`invalid table name: ${drop[1]}`), {
+        code: 259,
+      });
     return [];
   }
   const write = sql.match(

@@ -16,9 +16,8 @@ export function catalogColumnsSql(): string {
 }
 
 /**
- * The catalog's DDL. No IF NOT EXISTS — a server-version capability on HANA
- * (spec §9.10): the provider checks for the table, creates it, and re-checks on
- * failure. Exported for an operator running with `autoCreateSchema: false`.
+ * Plain catalog DDL, also exported for an operator running with
+ * `autoCreateSchema: false`.
  */
 export function createCatalogTableSql(table: string): string {
   return `CREATE TABLE ${quoteIdent(table)} (
