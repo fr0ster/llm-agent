@@ -118,6 +118,7 @@ export const INLINE_LLM_CONFIG_FIELDS: readonly string[] = [
   'apiKey',
   'credentialRef',
   'temperature',
+  'reasoningEffort',
   'promptCaching',
   'classifierTemperature',
   'maxTokens',

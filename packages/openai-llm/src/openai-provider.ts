@@ -186,6 +186,8 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
       // reject any temperature but 1).
       const temperature = options?.temperature ?? this.config.temperature;
       const maxTokens = options?.maxTokens ?? this.config.maxTokens;
+      const reasoningEffort =
+        options?.reasoningEffort ?? this.config.reasoningEffort;
 
       const sent = this.formatMessages(messages);
       let headers: Record<string, string>;
@@ -198,7 +200,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
               model,
               sent,
               tools,
-              { ...options, temperature, maxTokens },
+              { ...options, temperature, maxTokens, reasoningEffort },
               this.getTokenLimitParam.bind(this),
             ),
             { signal: options?.signal, headers },
@@ -259,6 +261,8 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
       // reject any temperature but 1).
       const temperature = options?.temperature ?? this.config.temperature;
       const maxTokens = options?.maxTokens ?? this.config.maxTokens;
+      const reasoningEffort =
+        options?.reasoningEffort ?? this.config.reasoningEffort;
 
       const sent = this.formatMessages(messages);
       let headers: Record<string, string>;
@@ -272,7 +276,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
                 model,
                 sent,
                 tools,
-                { ...options, temperature, maxTokens },
+                { ...options, temperature, maxTokens, reasoningEffort },
                 this.getTokenLimitParam.bind(this),
               ),
               ...streamParams(),

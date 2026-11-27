@@ -24,6 +24,7 @@ import type { IBearerCredential } from '@mcp-abap-adt/interfaces-auth';
 import {
   loadYamlConfig,
   resolveSmartServerConfig,
+  type SmartServerLlmConfig,
 } from '@mcp-abap-adt/llm-agent-server-libs';
 import { SapAiCoreEmbedder } from '@mcp-abap-adt/sap-aicore-embedder';
 import {
@@ -193,7 +194,10 @@ interface IModelToCheck {
   /** Config roles this row answers for (config mode only). */
   roles: string[];
   /** The role's sampling knobs, sent exactly as the server sends them. */
-  knobs: { temperature?: number; maxTokens?: number };
+  knobs: Pick<
+    SmartServerLlmConfig,
+    'temperature' | 'maxTokens' | 'reasoningEffort'
+  >;
   /** The half of an asymmetric embedder (`rag.embedder.asymmetric`). */
   inputType?: 'document' | 'query';
 }
@@ -238,7 +242,7 @@ async function fromConfig(configPath: string): Promise<IModelToCheck[]> {
   ) => {
     if (!requestedModes.includes(mode)) return;
     // Roles share a row only when the server would send the same request.
-    const key = `${model}|${ref}|${group}|${scenario}|${knobs.temperature}|${knobs.maxTokens}|${inputType}|${chatProvider}`;
+    const key = `${model}|${ref}|${group}|${scenario}|${knobs.temperature}|${knobs.maxTokens}|${knobs.reasoningEffort}|${inputType}|${chatProvider}`;
     const row = rows.get(key) ?? {
       model,
       probes: [],
@@ -277,6 +281,9 @@ async function fromConfig(configPath: string): Promise<IModelToCheck[]> {
       {
         ...(entry.temperature !== undefined
           ? { temperature: entry.temperature }
+          : {}),
+        ...(entry.reasoningEffort !== undefined
+          ? { reasoningEffort: entry.reasoningEffort }
           : {}),
         ...(entry.maxTokens !== undefined
           ? { maxTokens: entry.maxTokens }

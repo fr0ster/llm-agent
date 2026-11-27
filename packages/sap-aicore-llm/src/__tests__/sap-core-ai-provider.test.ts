@@ -11,6 +11,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import {
   OrchestrationClient,
+  OrchestrationResponse,
   OrchestrationStream,
   OrchestrationStreamChunkResponse,
   OrchestrationStreamResponse,
@@ -386,6 +387,47 @@ describe('SapCoreAIProvider — chat requestConfig', () => {
 // ---------------------------------------------------------------------------
 
 describe('SapCoreAIProvider — createClient', () => {
+  it('excludes provider output from the serialized orchestration config', async (t) => {
+    const provider = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      apiBaseUrl,
+      credential: testCredential(),
+    });
+    let serialized = '';
+    t.mock.method(
+      OrchestrationClient.prototype,
+      'chatCompletion',
+      async function (this: OrchestrationClient) {
+        serialized = JSON.stringify(this);
+        return completion('ok');
+      },
+    );
+
+    await provider.chat([
+      { role: 'user', content: 'Hello' },
+      {
+        role: 'assistant',
+        content: 'Earlier assistant reply',
+        tool_calls: [
+          {
+            id: 'call_1',
+            type: 'function',
+            function: { name: 'lookup', arguments: '{}' },
+          },
+        ],
+        providerOutput: {
+          protocol: 'openai.responses',
+          items: [{ type: 'reasoning', encrypted_content: 'private-output' }],
+        },
+      },
+      { role: 'tool', content: 'Lookup result', tool_call_id: 'call_1' },
+      { role: 'user', content: 'Continue' },
+    ]);
+
+    assert.match(serialized, /Earlier assistant reply/);
+    assert.doesNotMatch(serialized, /providerOutput|private-output/);
+  });
+
   it('passes tools through to OrchestrationClient config', () => {
     const p = new SapCoreAIProvider({
       model: 'gpt-4o',
@@ -405,12 +447,22 @@ describe('SapCoreAIProvider — createClient', () => {
 // Rate limiting (issue #282)
 // ---------------------------------------------------------------------------
 
-const completion = (text: string) => ({
-  getToolCalls: () => undefined,
-  getContent: () => text,
-  getFinishReason: () => 'stop',
-  getTokenUsage: () => undefined,
-});
+const completion = (text: string) =>
+  new OrchestrationResponse({
+    data: {
+      final_result: {
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: text },
+            finish_reason: 'stop',
+          },
+        ],
+      },
+    },
+    headers: {},
+    status: 200,
+  });
 
 const tooManyRequests = (retryAfter?: string) =>
   Object.assign(new Error('Request failed with status code 429'), {
@@ -632,8 +684,16 @@ describe('orchestrationModelParams', () => {
 
   it('sends the configured ones, temperature 0 included', () => {
     assert.deepEqual(
-      orchestrationModelParams({ maxTokens: 100, temperature: 0 }, true),
-      { max_tokens: 100, temperature: 0, tool_choice: 'auto' },
+      orchestrationModelParams(
+        { maxTokens: 100, temperature: 0, reasoningEffort: 'high' },
+        true,
+      ),
+      {
+        max_tokens: 100,
+        temperature: 0,
+        reasoning_effort: 'high',
+        tool_choice: 'auto',
+      },
     );
   });
 });

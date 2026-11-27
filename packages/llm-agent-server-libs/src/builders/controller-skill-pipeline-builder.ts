@@ -18,6 +18,7 @@ export interface BuilderLlmInput {
   url?: string;
   resourceGroup?: string;
   temperature?: number;
+  reasoningEffort?: SmartServerLlmConfig['reasoningEffort'];
   maxTokens?: number;
 }
 export interface BuilderSkillSourceInput {
@@ -52,6 +53,9 @@ function toLlmConfig(input: BuilderLlmInput): SmartServerLlmConfig {
       : {}),
     ...(input.temperature !== undefined
       ? { temperature: input.temperature }
+      : {}),
+    ...(input.reasoningEffort !== undefined
+      ? { reasoningEffort: input.reasoningEffort }
       : {}),
     ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
   };

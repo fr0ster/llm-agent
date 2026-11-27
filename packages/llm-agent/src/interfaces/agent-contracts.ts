@@ -68,6 +68,7 @@ export interface BaseAgentLlmBridge {
       temperature?: number;
       promptCaching?: CallOptions['promptCaching'];
       maxTokens?: number;
+      reasoningEffort?: CallOptions['reasoningEffort'];
       topP?: number;
       stop?: string[];
       /**
@@ -77,7 +78,7 @@ export interface BaseAgentLlmBridge {
        */
       signal?: AbortSignal;
     },
-  ): Promise<Pick<LLMResponse, 'content' | 'raw' | 'usage' | 'finishReason'>>;
+  ): Promise<LLMResponse>;
   streamWithTools(
     messages: Message[],
     tools: unknown[],
@@ -88,6 +89,7 @@ export interface BaseAgentLlmBridge {
       temperature?: number;
       promptCaching?: CallOptions['promptCaching'];
       maxTokens?: number;
+      reasoningEffort?: CallOptions['reasoningEffort'];
       topP?: number;
       stop?: string[];
       /**

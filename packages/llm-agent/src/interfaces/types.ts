@@ -7,7 +7,12 @@ import type { IUsageRecorder, UsageOperation } from './usage.js';
  * Shared types for Smart Orchestrated Agent contracts.
  */
 
-import type { Message, PromptCacheOptions } from '../types.js';
+import type {
+  Message,
+  PromptCacheOptions,
+  ProviderOutput,
+  ReasoningEffort,
+} from '../types.js';
 import type { StepStatus } from './adaptive-plan.js';
 import type { IRequestLogger, LlmCallRecord } from './request-logger.js';
 import type { OnPartial } from './streaming.js';
@@ -63,6 +68,7 @@ export interface CallOptions extends PromptCacheOptions {
   ) => ReadonlyMap<number, string> | undefined;
   temperature?: number;
   maxTokens?: number;
+  reasoningEffort?: ReasoningEffort;
   topP?: number;
   stop?: string[];
   stream?: boolean;
@@ -72,7 +78,7 @@ export interface CallOptions extends PromptCacheOptions {
    *  evaluator roles — those receive only a diagnostic-only subset
    *  (`sessionLogger`/`trace`/`sessionId`/`signal`) so a client-supplied
    *  override can never corrupt their internal structured output (JSON plans,
-   *  verdicts). Same for temperature / maxTokens / topP / stop. */
+   *  verdicts). Same for temperature / maxTokens / reasoningEffort / topP / stop. */
   model?: string;
   /** Filter RAG results by namespace or other metadata. Every `IRag` store
    *  honours `sessionId` and `userId` as an identity scope (see `IRag.query`). */
@@ -141,6 +147,7 @@ export interface LlmStreamChunk {
   toolCallCount?: number;
 
   content: string;
+  providerOutput?: ProviderOutput;
   /** Progress event with empty content; ignored by non-streaming accumulation. */
   status?: StepStatus;
   toolCalls?: StreamToolCall[];
@@ -297,6 +304,8 @@ export type LlmFinishReason = 'stop' | 'tool_calls' | 'length' | 'error';
 export interface LlmUsage {
   cachedInputTokens?: number;
   cacheCreationInputTokens?: number;
+  /** Reasoning tokens included in completionTokens. */
+  reasoningTokens?: number;
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
@@ -322,6 +331,7 @@ export interface ModelUsageEntry extends LlmUsage {
 
 export interface LlmResponse extends LlmUsageAttribution {
   content: string;
+  providerOutput?: ProviderOutput;
   toolCalls?: LlmToolCall[];
   finishReason: LlmFinishReason;
   raw?: unknown;

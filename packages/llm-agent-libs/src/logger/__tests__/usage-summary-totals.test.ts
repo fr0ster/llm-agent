@@ -1,9 +1,68 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { completeUsageCalls } from '../llm-call-usage.js';
 import {
   SessionRequestLogger,
   summaryToUsage,
 } from '../session-request-logger.js';
+import { StreamAttemptUsage } from '../stream-attempt-usage.js';
+
+test('stream attempts and request summaries retain reasoning tokens', () => {
+  const attempt = new StreamAttemptUsage();
+  const usage = { promptTokens: 2, completionTokens: 5, totalTokens: 7 };
+  attempt.add({ ...usage, reasoningTokens: 3 }, 'model');
+  attempt.add({ ...usage, reasoningTokens: 2 }, 'model');
+  const calls = attempt.records('tool-loop', 'model');
+  assert.equal(calls[0].reasoningTokens, 5);
+
+  const complete = completeUsageCalls(
+    {
+      usageByModel: {
+        model: {
+          promptTokens: 6,
+          completionTokens: 15,
+          totalTokens: 21,
+          reasoningTokens: 7,
+          requests: 2,
+        },
+      },
+    },
+    'tool-loop',
+    0,
+    calls,
+  );
+  assert.equal(complete[1].reasoningTokens, 2);
+
+  const logger = new SessionRequestLogger();
+  for (const call of complete) logger.logLlmCall(call);
+  const summary = logger.getSummary();
+  assert.equal(summary.totals.reasoningTokens, 7);
+  assert.equal(summary.byModel.model.reasoningTokens, 7);
+  assert.equal(summaryToUsage(summary).reasoningTokens, 7);
+});
+
+test('supplemental reasoning usage does not add a request', () => {
+  const attempt = new StreamAttemptUsage();
+  const usage = { promptTokens: 2, completionTokens: 5, totalTokens: 7 };
+  attempt.add(usage, 'model');
+  const calls = attempt.records('tool-loop', 'model');
+
+  for (const reasoningTokens of [0, 3]) {
+    const reported = { ...usage, reasoningTokens };
+    for (const attribution of [
+      { usage: reported, model: 'model' },
+      { usageByModel: { model: { ...reported, requests: 1 } } },
+    ]) {
+      const complete = completeUsageCalls(attribution, 'tool-loop', 0, calls);
+      const logger = new SessionRequestLogger();
+      for (const call of complete) logger.logLlmCall(call);
+      assert.deepEqual(logger.getSummary().byModel.model, {
+        ...reported,
+        requests: 1,
+      });
+    }
+  }
+});
 
 test('summaryToUsage sums all components into prompt/completion/total', () => {
   const usage = summaryToUsage({

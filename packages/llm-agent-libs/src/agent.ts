@@ -1484,6 +1484,7 @@ export class SmartAgent {
         );
       let content = '';
       let finishReason: LlmFinishReason | undefined;
+      let providerOutput: Message['providerOutput'];
       const toolCallsMap = new Map<
         number,
         { id: string; name: string; arguments: string }
@@ -1543,6 +1544,7 @@ export class SmartAgent {
           iterationBuffer = '';
           toolCallsMap.clear();
           finishReason = undefined;
+          providerOutput = undefined;
           continue;
         }
         attemptUsage.add(chunk.usage, this._mainLlm.model, chunk.usageCalls);
@@ -1581,6 +1583,7 @@ export class SmartAgent {
           }
         }
         if (chunk.finishReason) finishReason = chunk.finishReason;
+        providerOutput = chunk.providerOutput ?? providerOutput;
       }
       llmSpan.setStatus('ok');
       llmSpan.end();
@@ -1597,6 +1600,8 @@ export class SmartAgent {
         content,
         toolCallsMap.values(),
         (name) => externalToolNames.has(name) && !toolClientMap.has(name),
+        undefined,
+        providerOutput,
       );
       const toolCalls = hasToolCalls ? responseRound.executableCalls() : [];
       opts?.sessionLogger?.logStep(

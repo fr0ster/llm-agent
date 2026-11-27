@@ -58,6 +58,7 @@ export async function* runPassThrough(
       { id: string; name: string; arguments: string }
     >();
     let finishReason: LlmStreamChunk['finishReason'];
+    let providerOutput: LlmStreamChunk['providerOutput'];
     const attemptUsage = new StreamAttemptUsage();
     const logAttempt = (reported?: LlmUsageAttribution, countEmpty = true) => {
       const calls = attemptUsage.records(
@@ -108,11 +109,13 @@ export async function* runPassThrough(
         passContent = '';
         calls.clear();
         finishReason = undefined;
+        providerOutput = undefined;
         continue;
       }
       attemptUsage.add(chunk.value.usage, llm.model, chunk.value.usageCalls);
       if (chunk.value.content) passContent += chunk.value.content;
       if (chunk.value.finishReason) finishReason = chunk.value.finishReason;
+      providerOutput = chunk.value.providerOutput ?? providerOutput;
       if (chunk.value.toolCalls) {
         for (const [index, raw] of chunk.value.toolCalls.entries()) {
           const call = toToolCallDelta(raw, index);
@@ -131,6 +134,7 @@ export async function* runPassThrough(
         usage: _omitUsage,
         toolCalls: _omitCalls,
         finishReason: _omitFinish,
+        providerOutput: _omitProviderOutput,
         ...rest
       } = chunk.value;
       yield { ok: true, value: rest };
@@ -141,6 +145,8 @@ export async function* runPassThrough(
       passContent,
       calls.values(),
       () => true,
+      undefined,
+      providerOutput,
     );
     const executable = hasToolCalls ? round.executableCalls() : [];
     opts?.sessionLogger?.logStep(

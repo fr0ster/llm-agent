@@ -438,6 +438,7 @@ test('streams deltas and aggregates per-step input, output and cache usage', asy
         inputTokens: 10,
         outputTokens: 2,
         cacheReadTokens: 3,
+        reasoningTokens: 2,
       },
     });
     session.emit({
@@ -448,6 +449,7 @@ test('streams deltas and aggregates per-step input, output and cache usage', asy
         outputTokens: 1,
         cacheReadTokens: 2,
         cacheWriteTokens: 6,
+        reasoningTokens: 1,
       },
     });
     session.finish('Hello');
@@ -467,6 +469,7 @@ test('streams deltas and aggregates per-step input, output and cache usage', asy
         totalTokens: 17,
         cachedInputTokens: 5,
         cacheCreationInputTokens: 6,
+        reasoningTokens: 3,
       },
     },
   ]);

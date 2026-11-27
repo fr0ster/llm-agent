@@ -1,15 +1,15 @@
 import type { ModelUsageEntry, TokenUsage } from './interfaces/types.js';
 
-type CacheTokens = Pick<
+type OptionalTokenUsage = Pick<
   TokenUsage,
-  'cachedInputTokens' | 'cacheCreationInputTokens'
+  'cachedInputTokens' | 'cacheCreationInputTokens' | 'reasoningTokens'
 >;
 
-/** Sum cache counters while preserving absent fields for older providers/records. */
+/** Sum optional cache and reasoning counters while preserving absent fields. */
 export function addCacheTokenUsage(
   a?: Partial<TokenUsage>,
   b?: Partial<TokenUsage>,
-): CacheTokens {
+): OptionalTokenUsage {
   return {
     ...(a?.cachedInputTokens !== undefined || b?.cachedInputTokens !== undefined
       ? {
@@ -23,6 +23,12 @@ export function addCacheTokenUsage(
           cacheCreationInputTokens:
             (a?.cacheCreationInputTokens ?? 0) +
             (b?.cacheCreationInputTokens ?? 0),
+        }
+      : {}),
+    ...(a?.reasoningTokens !== undefined || b?.reasoningTokens !== undefined
+      ? {
+          reasoningTokens:
+            (a?.reasoningTokens ?? 0) + (b?.reasoningTokens ?? 0),
         }
       : {}),
   };

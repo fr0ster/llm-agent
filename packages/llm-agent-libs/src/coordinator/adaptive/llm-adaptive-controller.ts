@@ -8,11 +8,18 @@ import type {
   LlmComponent,
   LlmUsage,
   LlmUsageAttribution,
+  Message,
   Verdict,
 } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
 import { chatWithUsage } from '../../logger/llm-call-usage.js';
 import { lastObject, parsePlan, parseVerdict } from './parse-plan.js';
+
+function promptHistory(history: Message[]) {
+  return history.map(
+    ({ providerOutput: _providerOutput, ...message }) => message,
+  );
+}
 
 /** Planning instructions shared by the default adaptive controller. */
 export const ADAPTIVE_CONTROLLER_SYSTEM: string = `You control a sequential adaptive plan. Size the plan to the request.
@@ -104,7 +111,7 @@ export class LlmAdaptiveController implements IAdaptiveController {
     model?: string;
     usageCalls?: LlmUsageAttribution['usageCalls'];
   }> {
-    const history = input.history;
+    const history = promptHistory(input.history);
     const previousRun = input.previousRun && {
       request: input.previousRun.request,
       plan: input.previousRun.plan,
@@ -147,11 +154,14 @@ export class LlmAdaptiveController implements IAdaptiveController {
     model?: string;
     usageCalls?: LlmUsageAttribution['usageCalls'];
   }> {
-    const { signal, usage, ...context } = input;
+    const { signal, usage, history, ...context } = input;
     const response = await this.chat(
       'reviewer',
       'Judge the target records against the request, spec and check goal. Return JSON only: {"verdict":"pass|fail|partial","reason":"..."}.',
-      JSON.stringify(context),
+      JSON.stringify({
+        ...context,
+        history: history && promptHistory(history),
+      }),
       { signal, usage: usage?.with({ role: 'reviewer' }) },
     );
     const verdict = parseVerdict(response.content);

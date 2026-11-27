@@ -49,6 +49,7 @@ import type {
   PluginExports,
   RagAccess,
   RagCaller,
+  ReasoningEffort,
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -180,6 +181,7 @@ export interface SmartServerLlmConfig {
   url?: string;
   model?: string;
   temperature?: number;
+  reasoningEffort?: ReasoningEffort;
   maxTokens?: number;
   classifierTemperature?: number;
   /**

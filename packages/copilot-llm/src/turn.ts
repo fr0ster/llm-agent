@@ -1,6 +1,7 @@
 import { addAbortListener } from 'node:events';
 import type { SessionEvent } from '@github/copilot-sdk';
 import {
+  addCacheTokenUsage,
   LlmError,
   type LlmResponse,
   type LlmToolCall,
@@ -71,30 +72,35 @@ function addUsage(
   usage: LlmUsage | undefined,
   data: EventData<'assistant.usage'>,
 ): LlmUsage | undefined {
-  const { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens } = data;
+  const {
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    reasoningTokens,
+  } = data;
   if (
-    [inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens].every(
-      (n) => n === undefined,
-    )
+    [
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
+      reasoningTokens,
+    ].every((n) => n === undefined)
   ) {
     return usage;
   }
   const promptTokens = (usage?.promptTokens ?? 0) + (inputTokens ?? 0);
   const completionTokens = (usage?.completionTokens ?? 0) + (outputTokens ?? 0);
   return {
-    ...usage,
+    ...addCacheTokenUsage(usage, {
+      cachedInputTokens: cacheReadTokens,
+      cacheCreationInputTokens: cacheWriteTokens,
+      reasoningTokens,
+    }),
     promptTokens,
     completionTokens,
     totalTokens: promptTokens + completionTokens,
-    ...(cacheReadTokens !== undefined
-      ? { cachedInputTokens: (usage?.cachedInputTokens ?? 0) + cacheReadTokens }
-      : {}),
-    ...(cacheWriteTokens !== undefined
-      ? {
-          cacheCreationInputTokens:
-            (usage?.cacheCreationInputTokens ?? 0) + cacheWriteTokens,
-        }
-      : {}),
   };
 }
 

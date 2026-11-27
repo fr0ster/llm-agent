@@ -13,6 +13,7 @@ import type {
   BaseAgentLlmBridge,
   LLMProvider,
   Message,
+  ProviderOutput,
 } from '@mcp-abap-adt/llm-agent';
 
 import { parseToolArguments } from '../pipeline/handlers/tool-response-round.js';
@@ -62,17 +63,11 @@ export class LlmProviderBridge implements BaseAgentLlmBridge {
     options?: AgentCallOptions,
   ): ReturnType<BaseAgentLlmBridge['callWithTools']> {
     const functions = convertToolsToFunctions(tools);
-    const response = await this.provider.chat(
+    return this.provider.chat(
       messages,
       functions.length > 0 ? functions : undefined,
       options,
     );
-    return {
-      content: response.content,
-      raw: response.raw,
-      usage: response.usage,
-      finishReason: response.finishReason,
-    };
   }
 
   async *streamWithTools(
@@ -91,6 +86,7 @@ export class LlmProviderBridge implements BaseAgentLlmBridge {
       { id: string; name: string; arguments: string }
     >();
     let finishReason: 'stop' | 'tool_calls' | 'length' | 'error' = 'stop';
+    let providerOutput: ProviderOutput | undefined;
 
     for await (const chunk of this.provider.streamChat(
       messages,
@@ -139,6 +135,7 @@ export class LlmProviderBridge implements BaseAgentLlmBridge {
       if (chunk.finishReason) {
         finishReason = normalizeFinishReason(chunk.finishReason);
       }
+      providerOutput = chunk.providerOutput ?? providerOutput;
     }
 
     // Emit accumulated tool calls
@@ -157,6 +154,10 @@ export class LlmProviderBridge implements BaseAgentLlmBridge {
       yield { type: 'tool_calls', toolCalls } as AgentStreamChunk;
     }
 
-    yield { type: 'done', finishReason } as AgentStreamChunk;
+    yield {
+      type: 'done',
+      finishReason,
+      ...(providerOutput ? { providerOutput } : {}),
+    };
   }
 }

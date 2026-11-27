@@ -64,6 +64,9 @@ export class NonStreamingLlm implements ILlm {
       value: {
         content: result.value.content,
         finishReason: result.value.finishReason,
+        ...(result.value.providerOutput
+          ? { providerOutput: result.value.providerOutput }
+          : {}),
         toolCalls: result.value.toolCalls,
         usage: result.value.usage,
       },

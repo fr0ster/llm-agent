@@ -130,29 +130,31 @@ function parseProviderResponse(
   onDiagnostic?: ParseDiagnosticSink,
 ): LlmResponse {
   const providerRaw = raw.raw as WireResponse | undefined;
-
-  if (!providerRaw) {
-    return {
-      content: raw.content,
-      finishReason: normalizeFinishReason(raw.finishReason ?? 'stop'),
-      ...(raw.usage ? { usage: raw.usage } : {}),
-    };
-  }
+  const providerOutput = raw.providerOutput
+    ? { providerOutput: raw.providerOutput }
+    : {};
 
   const toolCalls: LlmToolCall[] = [];
   let usage = raw.usage;
 
   // Extract usage
-  if (!usage && providerRaw.usage) {
+  if (!usage && providerRaw?.usage) {
     usage = normalizeWireUsage(providerRaw.usage);
   }
 
   // OpenAI / DeepSeek format
-  const choice = providerRaw.choices?.[0];
-  if (choice) {
-    for (const tc of choice.message?.tool_calls ?? []) {
-      const rawArguments =
-        typeof tc.function.arguments === 'string' ? tc.function.arguments : '';
+  const choice = providerRaw?.choices?.[0];
+  if (raw.toolCalls || choice) {
+    const calls =
+      raw.toolCalls ??
+      choice?.message?.tool_calls?.map((tc) => ({
+        id: tc.id,
+        name: tc.function.name,
+        arguments: tc.function.arguments,
+      })) ??
+      [];
+    for (const tc of calls) {
+      const rawArguments = typeof tc.arguments === 'string' ? tc.arguments : '';
       const args = parseToolArguments(rawArguments);
       if (args === undefined) {
         onDiagnostic?.({
@@ -161,24 +163,25 @@ function parseProviderResponse(
           message: 'Failed to parse tool call arguments JSON',
           details: {
             toolId: tc.id,
-            toolName: tc.function?.name,
+            toolName: tc.name,
           },
         });
       }
       toolCalls.push({
-        id: tc.id,
-        name: tc.function.name,
+        id: tc.id ?? '',
+        name: tc.name ?? '',
         arguments: args ?? {},
         ...(args === undefined ? { rawArguments } : {}),
       });
     }
 
     return {
+      ...providerOutput,
       content: raw.content,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       finishReason: normalizeFinishReason(
         raw.finishReason ??
-          choice.finish_reason ??
+          choice?.finish_reason ??
           (toolCalls.length > 0 ? 'tool_calls' : 'stop'),
       ),
       usage,
@@ -187,7 +190,7 @@ function parseProviderResponse(
   }
 
   // Anthropic format
-  if (Array.isArray(providerRaw.content)) {
+  if (Array.isArray(providerRaw?.content)) {
     for (const block of providerRaw.content) {
       if (block.type === 'tool_use') {
         const rawArguments = JSON.stringify(block.input) ?? '';
@@ -202,6 +205,7 @@ function parseProviderResponse(
     }
 
     return {
+      ...providerOutput,
       content: raw.content,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       finishReason: normalizeFinishReason(
@@ -213,10 +217,11 @@ function parseProviderResponse(
   }
 
   return {
+    ...providerOutput,
     content: raw.content,
     finishReason: normalizeFinishReason(raw.finishReason ?? 'stop'),
-    usage,
-    raw: providerRaw,
+    ...(usage ? { usage } : {}),
+    ...(providerRaw ? { raw: providerRaw } : {}),
   };
 }
 
@@ -254,6 +259,9 @@ function parseStreamChunk(
           ...(raw.cacheCreationInputTokens !== undefined
             ? { cacheCreationInputTokens: raw.cacheCreationInputTokens }
             : {}),
+          ...(raw.reasoningTokens !== undefined
+            ? { reasoningTokens: raw.reasoningTokens }
+            : {}),
           promptTokens: raw.promptTokens,
           completionTokens: raw.completionTokens,
           totalTokens: raw.promptTokens + raw.completionTokens,
@@ -263,6 +271,7 @@ function parseStreamChunk(
     return {
       content: '',
       finishReason: raw.finishReason,
+      ...(raw.providerOutput ? { providerOutput: raw.providerOutput } : {}),
     };
   }
 
@@ -459,6 +468,9 @@ export class LlmAdapter implements ILlm, IModelProvider {
             temperature: options.temperature,
             promptCaching: options.promptCaching,
             maxTokens: options.maxTokens,
+            ...(options.reasoningEffort !== undefined
+              ? { reasoningEffort: options.reasoningEffort }
+              : {}),
             topP: options.topP,
             stop: options.stop,
             // The deadline goes down to the transport. Racing the promise
@@ -521,6 +533,9 @@ export class LlmAdapter implements ILlm, IModelProvider {
             temperature: options.temperature,
             promptCaching: options.promptCaching,
             maxTokens: options.maxTokens,
+            ...(options.reasoningEffort !== undefined
+              ? { reasoningEffort: options.reasoningEffort }
+              : {}),
             topP: options.topP,
             stop: options.stop,
             // The deadline goes down to the transport. Racing the promise

@@ -163,6 +163,7 @@ describe('makeLlm — resourceGroup', () => {
       credentialRef: 'FOUNDATION',
       resourceGroup: 'rg-2',
       maxTokens: 77,
+      reasoningEffort: 'high',
     });
     assert.equal(llm.model, 'anthropic--claude-4.6-sonnet');
     assert.equal(seen[0]?.provider, 'sap-aicore-foundation');
@@ -170,6 +171,7 @@ describe('makeLlm — resourceGroup', () => {
     assert.equal(seen[0]?.cfg.apiBaseUrl, 'https://ai');
     assert.equal(seen[0]?.cfg.resourceGroup, 'rg-2');
     assert.equal(seen[0]?.cfg.maxTokens, 77);
+    assert.equal(seen[0]?.cfg.reasoningEffort, 'high');
   });
 
   it('is refused on a provider that has no resource group', async () => {
