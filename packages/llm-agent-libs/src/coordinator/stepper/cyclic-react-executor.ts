@@ -340,6 +340,9 @@ export class CyclicReActExecutor implements IExecutor {
             ...call,
             arguments: call.rawArguments ?? JSON.stringify(call.arguments),
           })),
+          undefined,
+          undefined,
+          v.providerOutput,
         );
         const toolCalls = round.executableCalls();
         for (const tc of toolCalls) {

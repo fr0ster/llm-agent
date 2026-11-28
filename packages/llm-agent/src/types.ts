@@ -14,6 +14,29 @@ export type MessageMetadataValue =
   | MessageMetadataValue[]
   | { [key: string]: MessageMetadataValue | undefined };
 
+/** Output items owned by a provider protocol and replayed as conversation history. */
+export interface ProviderOutput {
+  protocol: string;
+  items: ReadonlyArray<{ [key: string]: MessageMetadataValue | undefined }>;
+}
+
+/** Generic reasoning levels; each model accepts its own subset. */
+export const REASONING_EFFORTS = [
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const;
+
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
+export function isReasoningEffort(value: string): value is ReasoningEffort {
+  return REASONING_EFFORTS.some((effort) => effort === value);
+}
+
 export interface Message {
   /**
    * Message role
@@ -24,6 +47,8 @@ export interface Message {
    */
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string | null;
+  /** Protocol-specific output retained on assistant messages. */
+  providerOutput?: ProviderOutput;
   /** Optional application metadata. */
   metadata?: {
     [key: string]: MessageMetadataValue | undefined;
@@ -67,12 +92,12 @@ export interface AgentResponse {
 export interface LLMResponse {
   content: string;
   raw?: unknown;
+  providerOutput?: ProviderOutput;
   finishReason?: string;
   /**
    * Streaming tool-call deltas emitted by the underlying provider, normalized
-   * across providers (SAP AI SDK, OpenAI/DeepSeek, Anthropic). Populated only
-   * by `streamChat()`. Consumers (e.g. LlmProviderBridge) should accumulate
-   * these by `index` to reconstruct full tool calls.
+   * across providers (SAP AI SDK, OpenAI/DeepSeek, Anthropic). In a stream,
+   * consumers should accumulate these by `index` to reconstruct full tool calls.
    */
   toolCalls?: Array<{
     index: number;
@@ -108,6 +133,7 @@ export interface LLMProviderConfig extends PromptCacheOptions {
   model?: string;
   temperature?: number;
   maxTokens?: number;
+  reasoningEffort?: ReasoningEffort;
   /**
    * What this provider does when a server throttles it.
    *
@@ -133,6 +159,7 @@ export interface LLMCallOptions extends PromptCacheOptions {
   model?: string;
   temperature?: number;
   maxTokens?: number;
+  reasoningEffort?: ReasoningEffort;
   topP?: number;
   stop?: string[];
   /**
@@ -162,5 +189,10 @@ export type AgentStreamChunk =
       completionTokens: number;
       cachedInputTokens?: number;
       cacheCreationInputTokens?: number;
+      reasoningTokens?: number;
     }
-  | { type: 'done'; finishReason: 'stop' | 'tool_calls' | 'length' | 'error' };
+  | {
+      type: 'done';
+      finishReason: 'stop' | 'tool_calls' | 'length' | 'error';
+      providerOutput?: ProviderOutput;
+    };

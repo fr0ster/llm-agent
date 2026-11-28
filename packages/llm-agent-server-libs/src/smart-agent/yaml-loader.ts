@@ -25,6 +25,7 @@ llm:
   # Set them only for a model that accepts them (gpt-5, o-series and
   # claude-opus-4-7+ accept temperature 1 only).
   # temperature: 0.7
+  # reasoningEffort: low  # Omit to use the model's default effort.
   # classifierTemperature: 0.1
 
 rag:

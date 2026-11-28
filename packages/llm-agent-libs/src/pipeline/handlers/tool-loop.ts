@@ -601,6 +601,7 @@ export class ToolLoopHandler implements IStageHandler {
 
       let content = '';
       let finishReason: LlmFinishReason | undefined;
+      let providerOutput: Message['providerOutput'];
       const toolCallsMap = new Map<
         number,
         { id: string; name: string; arguments: string }
@@ -713,6 +714,7 @@ export class ToolLoopHandler implements IStageHandler {
           content = '';
           toolCallsMap.clear();
           finishReason = undefined;
+          providerOutput = undefined;
           continue;
         }
         attemptUsage.add(chunk.usage, ctx.mainLlm.model, chunk.usageCalls);
@@ -765,6 +767,7 @@ export class ToolLoopHandler implements IStageHandler {
           }
         }
         if (chunk.finishReason) finishReason = chunk.finishReason;
+        providerOutput = chunk.providerOutput ?? providerOutput;
       }
 
       llmSpan.setStatus('ok');
@@ -784,6 +787,8 @@ export class ToolLoopHandler implements IStageHandler {
         content,
         toolCallsMap.values(),
         (name) => externalToolNames.has(name) && !ctx.toolClientMap.has(name),
+        undefined,
+        providerOutput,
       );
       const toolCalls = hasToolCalls ? responseRound.executableCalls() : [];
 

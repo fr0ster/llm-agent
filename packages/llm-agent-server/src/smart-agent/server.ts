@@ -165,6 +165,7 @@ export class SmartAgentServer {
       messages: Array<Message>;
       tools?: unknown[];
       temperature?: number;
+      reasoning_effort?: CallOptions['reasoningEffort'];
       max_tokens?: number;
       top_p?: number;
       stream?: boolean;
@@ -196,6 +197,9 @@ export class SmartAgentServer {
     const opts: CallOptions & { externalTools?: unknown[] } = {
       ...caching,
       temperature: body.temperature,
+      ...(body.reasoning_effort !== undefined
+        ? { reasoningEffort: body.reasoning_effort }
+        : {}),
       maxTokens: body.max_tokens,
       topP: body.top_p,
       externalTools: body.tools,

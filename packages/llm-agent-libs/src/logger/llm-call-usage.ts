@@ -96,7 +96,23 @@ function usageRemainder(usage: LlmUsage, covered: ModelUsageEntry): LlmUsage {
           (covered.cacheCreationInputTokens ?? 0),
       ),
     }),
+    ...(usage.reasoningTokens !== undefined && {
+      reasoningTokens: Math.max(
+        0,
+        usage.reasoningTokens - (covered.reasoningTokens ?? 0),
+      ),
+    }),
   };
+}
+
+function hasUncoveredReasoning(
+  remaining: LlmUsage,
+  covered: LlmUsage,
+): boolean {
+  return (
+    remaining.reasoningTokens !== undefined &&
+    (covered.reasoningTokens === undefined || remaining.reasoningTokens > 0)
+  );
 }
 
 /** Preserve each identified call and import only the uncovered returned usage. */
@@ -130,6 +146,7 @@ export function completeUsageCalls(
       const requests = Math.max(0, usage.requests - accounted.requests);
       if (
         requests > 0 ||
+        hasUncoveredReasoning(remaining, accounted) ||
         Object.values(remaining).some((tokens) => tokens > 0)
       ) {
         calls.push({
@@ -144,16 +161,22 @@ export function completeUsageCalls(
     }
   } else if (attribution.usage) {
     const remaining = usageRemainder(attribution.usage, flat);
+    const { reasoningTokens: _reasoningTokens, ...otherCounters } = remaining;
+    const hasOtherUsage = Object.values(otherCounters).some(
+      (tokens) => tokens > 0,
+    );
     if (
       calls.length === 0 ||
-      Object.values(remaining).some((tokens) => tokens > 0)
+      hasOtherUsage ||
+      hasUncoveredReasoning(remaining, flat)
     ) {
+      const [call] = usageCallRecords(
+        { usage: remaining, model: attribution.model },
+        component,
+        durationMs,
+      );
       calls.push(
-        ...usageCallRecords(
-          { usage: remaining, model: attribution.model },
-          component,
-          durationMs,
-        ),
+        calls.length > 0 && !hasOtherUsage ? { ...call, requests: 0 } : call,
       );
     }
   }

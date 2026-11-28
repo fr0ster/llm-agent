@@ -4,6 +4,7 @@ import {
   type ILlm,
   LlmError,
   type LlmUsage,
+  type Message,
   type RunRecord,
   type Verdict,
 } from '@mcp-abap-adt/llm-agent';
@@ -127,6 +128,29 @@ const checkInput = {
   },
   targets: [record],
 };
+test('plan and check keep conversation text while omitting provider output', async () => {
+  const plan = fake(JSON.stringify({ steps }));
+  const check = fake('{"verdict":"pass","reason":"ok"}');
+  const history: Message[] = [
+    {
+      role: 'assistant',
+      content: 'Prior assistant reply',
+      providerOutput: {
+        protocol: 'openai.responses',
+        items: [{ type: 'reasoning', encrypted_content: 'private-output' }],
+      },
+    },
+  ];
+  await plan.controller.plan({ ...input, history });
+  await check.controller.check({ ...checkInput, history });
+
+  for (const { calls } of [plan, check]) {
+    const prompt = String(calls[0][0][1].content);
+    assert.match(prompt, /Prior assistant reply/);
+    assert.doesNotMatch(prompt, /providerOutput|private-output/);
+  }
+});
+
 test('check returns verdict with request, spec, goal and targets', async () => {
   const { controller, calls } = fake(
     '{"verdict":"partial","reason":"needs work"}',

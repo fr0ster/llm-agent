@@ -15,6 +15,7 @@ export type SubagentResult =
       kind: 'tool_call';
       content?: string;
       toolCalls: StreamToolCall[];
+      providerOutput?: Message['providerOutput'];
       usage?: LlmUsage;
     }
   | {

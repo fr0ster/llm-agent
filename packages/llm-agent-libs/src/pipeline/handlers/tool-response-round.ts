@@ -49,6 +49,7 @@ export class ToolResponseRound {
     }>,
     isExternal: (name: string) => boolean = () => false,
     historicalIds?: readonly string[],
+    providerOutput?: Message['providerOutput'],
   ) {
     const roundId = randomUUID();
     let externalIndex = 0;
@@ -67,6 +68,7 @@ export class ToolResponseRound {
     this.assistant = {
       role: 'assistant',
       content: content || null,
+      ...(providerOutput ? { providerOutput } : {}),
       tool_calls: this.calls.map((call) => ({
         id: call.id,
         type: 'function',

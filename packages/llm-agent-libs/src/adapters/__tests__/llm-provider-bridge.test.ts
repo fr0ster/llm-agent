@@ -1,12 +1,20 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { describe, it, test } from 'node:test';
 import type {
   AgentStreamChunk,
   IModelInfo,
   LLMProvider,
   LLMResponse,
   Message,
+  ProviderOutput,
 } from '@mcp-abap-adt/llm-agent';
+import { SmartAgent } from '../../agent.js';
+import {
+  makeAssembler,
+  makeDefaultDeps,
+  testCallOptions,
+} from '../../testing/index.js';
+import { LlmAdapter } from '../llm-adapter.js';
 import { LlmProviderBridge } from '../llm-provider-bridge.js';
 
 class StubProvider implements LLMProvider {
@@ -91,4 +99,82 @@ describe('LlmProviderBridge — streaming tool_calls aggregation (#119)', () => 
       undefined,
     );
   });
+});
+
+test('carries provider output and reasoning effort through an agent tool round', async () => {
+  const providerOutput: ProviderOutput = {
+    protocol: 'openai.responses',
+    items: [
+      { type: 'reasoning', id: 'rs_1', encrypted_content: 'encrypted' },
+      {
+        type: 'function_call',
+        call_id: 'call_1',
+        name: 'Lookup',
+        arguments: '{}',
+      },
+    ],
+  };
+  const toolResponse: LLMResponse = {
+    content: '',
+    toolCalls: [{ index: 1, id: 'call_1', name: 'Lookup', arguments: '{}' }],
+    finishReason: 'tool_calls',
+    providerOutput,
+  };
+  const requests: Message[][] = [];
+  const provider: LLMProvider = {
+    async chat(_messages, _tools, options) {
+      assert.equal(options?.reasoningEffort, 'low');
+      return toolResponse;
+    },
+    async *streamChat(messages, _tools, options) {
+      assert.equal(options?.reasoningEffort, 'high');
+      requests.push(structuredClone(messages));
+      if (requests.length === 1) yield toolResponse;
+      else yield { content: 'Done', finishReason: 'stop' };
+    },
+  };
+  const llm = new LlmAdapter(new LlmProviderBridge(provider));
+  const response = await llm.chat([], [], { reasoningEffort: 'low' });
+  assert.ok(response.ok);
+  assert.deepEqual(response.value.providerOutput, providerOutput);
+  assert.deepEqual(response.value.toolCalls, [
+    { id: 'call_1', name: 'Lookup', arguments: {} },
+  ]);
+
+  const { deps } = makeDefaultDeps({
+    assembler: makeAssembler([
+      { role: 'user', content: 'Look up the result.' },
+    ]),
+    mcpClients: [
+      {
+        async listTools() {
+          return {
+            ok: true,
+            value: [
+              { name: 'Lookup', description: 'Look up', inputSchema: {} },
+            ],
+          };
+        },
+        async callTool() {
+          return { ok: true, value: { content: 'Found' } };
+        },
+      },
+    ],
+  });
+  deps.mainLlm = llm;
+  const result = await new SmartAgent(deps, {
+    refreshToolsPerIteration: false,
+  }).process('Look up the result.', {
+    ...testCallOptions(),
+    reasoningEffort: 'high',
+  });
+  assert.ok(result.ok);
+  assert.equal(result.value.content, 'Done');
+  assert.equal(requests.length, 2);
+  const assistant = requests[1].find((message) => message.role === 'assistant');
+  const output = requests[1].find((message) => message.role === 'tool');
+  assert.deepEqual(assistant?.providerOutput, providerOutput);
+  assert.notEqual(assistant?.tool_calls?.[0].id, 'call_1');
+  assert.equal(output?.tool_call_id, assistant?.tool_calls?.[0].id);
+  assert.equal(output?.content, 'Found');
 });

@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { RagCaller } from '@mcp-abap-adt/llm-agent';
 import {
   buildExternalResults,
+  type CallOptions,
   contextExceededError,
   type IModelProvider,
   type IRequestLogger,
@@ -99,6 +100,7 @@ export async function handleChat(
     }>;
     model?: string;
     temperature?: number;
+    reasoning_effort?: CallOptions['reasoningEffort'];
     max_tokens?: number;
     top_p?: number;
     stop?: string | string[];
@@ -208,6 +210,9 @@ export async function handleChat(
       : {}),
     ...(body.temperature !== undefined
       ? { temperature: body.temperature }
+      : {}),
+    ...(body.reasoning_effort !== undefined
+      ? { reasoningEffort: body.reasoning_effort }
       : {}),
     ...(body.max_tokens !== undefined ? { maxTokens: body.max_tokens } : {}),
     ...(body.top_p !== undefined ? { topP: body.top_p } : {}),

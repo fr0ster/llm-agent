@@ -208,6 +208,9 @@ export class SelfDispatch implements IDispatchStrategy {
           ...call,
           arguments: call.rawArguments ?? JSON.stringify(call.arguments),
         })),
+        undefined,
+        undefined,
+        res.value.providerOutput,
       );
       const toolCalls = round.executableCalls();
       for (const tc of toolCalls) {

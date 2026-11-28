@@ -167,6 +167,9 @@ export class AnthropicApiAdapter implements ILlmApiAdapter {
     }
     if (body.temperature !== undefined)
       options.temperature = body.temperature as number;
+    if (body.reasoning_effort !== undefined)
+      options.reasoningEffort =
+        body.reasoning_effort as AgentCallOptions['reasoningEffort'];
     if (body.max_tokens !== undefined)
       options.maxTokens = body.max_tokens as number;
     if (body.top_p !== undefined) options.topP = body.top_p as number;

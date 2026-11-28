@@ -5,6 +5,9 @@
 
 import {
   type IThrottleStrategy,
+  isReasoningEffort,
+  REASONING_EFFORTS,
+  type ReasoningEffort,
   ReportThrottling,
   WaitAsTold,
 } from '@mcp-abap-adt/llm-agent';
@@ -33,6 +36,22 @@ import type {
 import type { YamlConfig } from './yaml-loader.js';
 import { get } from './yaml-loader.js';
 
+/** Unset stays unset: the model then applies its own reasoning default. */
+function reasoningEffortOption(
+  value: ReturnType<typeof get>,
+  path = 'llm.reasoningEffort',
+): {
+  reasoningEffort?: ReasoningEffort;
+} {
+  if (value === undefined) return {};
+  const effort = String(value);
+  if (!isReasoningEffort(effort))
+    throw new ConfigValidationError([
+      `${path} must be one of ${REASONING_EFFORTS.join(', ')}; got "${effort}"`,
+    ]);
+  return { reasoningEffort: effort };
+}
+
 export function resolveLlmSection(yaml: YamlConfig): SmartServerConfig['llm'] {
   return get(yaml, 'llm')
     ? typeof get(yaml, 'llm', 'provider') === 'string'
@@ -55,6 +74,7 @@ export function resolveLlmSection(yaml: YamlConfig): SmartServerConfig['llm'] {
           // Unset stays unset: the provider then sends no temperature and
           // the model applies its own default.
           temperature: optionalNumber(get(yaml, 'llm', 'temperature')),
+          ...reasoningEffortOption(get(yaml, 'llm', 'reasoningEffort')),
           ...promptCacheOptions({
             promptCaching: get(yaml, 'llm', 'promptCaching'),
           }),
@@ -100,6 +120,10 @@ function validateLlmMap(
     // then walking through the window.
     out[role] = {
       ...(entry as SmartServerLlmConfig),
+      ...reasoningEffortOption(
+        raw.reasoningEffort,
+        `llm.${role}.reasoningEffort`,
+      ),
       ...promptCacheOptions(entry),
       ...(raw.whenThrottled !== undefined
         ? whenThrottledOption(raw.whenThrottled, `llm.${role}.whenThrottled`)

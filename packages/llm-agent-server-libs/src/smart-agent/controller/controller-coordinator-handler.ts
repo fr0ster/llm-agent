@@ -1654,6 +1654,8 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             };
           }),
           isExternalTool,
+          undefined,
+          res.providerOutput,
         );
         const calls = responseRound.executableCalls();
         if (calls.length === 0 || calls[0].id !== responseRound.calls[0].id) {

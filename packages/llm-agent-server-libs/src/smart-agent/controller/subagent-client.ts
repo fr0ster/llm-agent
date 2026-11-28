@@ -19,8 +19,8 @@ export interface ISubagentClient {
  * Narrow a full `CallOptions` down to the diagnostic-only subset safe to hand to
  * controller subagent roles (reviewer, finalizer, planner, target-state
  * evaluator). These roles rely on STRUCTURED output (JSON plans, verdicts) —
- * generation params (`model`/`temperature`/`maxTokens`/`topP`/`stop`) built from
- * the client request body must NOT reach them, only the diagnostic-only fields
+ * generation params built from the client request body must NOT reach them,
+ * only the diagnostic-only fields
  * needed for tracing, cancellation, and usage accounting. `undefined` in → `undefined` out.
  */
 export function diagnosticCallOptions(
@@ -87,6 +87,7 @@ export function makeSubagentClient(llm: ILlm): ISubagentClient {
           kind: 'tool_call',
           ...(v.content ? { content: v.content } : {}),
           toolCalls: v.toolCalls,
+          ...(v.providerOutput ? { providerOutput: v.providerOutput } : {}),
           ...usage,
         };
       return { kind: 'content', content: v.content ?? '', ...usage };

@@ -63,18 +63,19 @@ function provider(
     ...config,
   });
 }
-function deployment(model: string, id: string) {
+function deployment(model: string, id: string, configurationId?: string) {
   return {
     scenarioId: 'foundation-models',
+    configurationId,
     deploymentUrl: `${deploymentUrl + id}/`,
     details: { resources: { backendDetails: { model: { name: model } } } },
   };
 }
-function list() {
+function list(openAIConfigurationId?: string) {
   return Response.json({
     resources: [
-      deployment(openAIModel, 'openai'),
-      deployment(anthropicModel, 'claude'),
+      deployment(openAIModel, 'openai', openAIConfigurationId),
+      deployment(anthropicModel, 'claude', 'claude-config'),
     ],
   });
 }
@@ -85,6 +86,17 @@ function mockHttp(
   t.mock.method(globalThis, 'fetch', (input: string, init?: RequestInit) =>
     handler(new URL(input), init),
   );
+}
+function mockResponsesHttp(
+  t: TestContext,
+  handler: (url: URL, init?: RequestInit) => Response,
+) {
+  mockHttp(t, (url, init) => {
+    if (url.pathname === '/v2/lm/deployments') return list('openai-config');
+    if (url.pathname === '/v2/lm/configurations/openai-config')
+      return Response.json({ executableId: 'azure-openai' });
+    return handler(url, init);
+  });
 }
 function bodyOf<T extends object>(init?: RequestInit): T {
   assert.equal(typeof init?.body, 'string');
@@ -334,47 +346,347 @@ test('looks through deployment pages and scopes discovery to the configured reso
   ]);
 });
 
-test('OpenAI chat sends native messages and tools, then maps the response and cache usage', async (t) => {
-  mockHttp(t, (url, init) => {
-    if (url.pathname === '/v2/lm/deployments') return list();
-    assert.equal(url.href, `${deploymentUrl}openai${completionPath}`);
+const responseCall = {
+  type: 'function_call',
+  id: 'fc_a',
+  call_id: 'call_a',
+  name: 'lookup',
+  arguments: '{"x":1}',
+  status: 'completed',
+};
+const responseReasoning = {
+  type: 'reasoning',
+  id: 'rs_a',
+  summary: [],
+  encrypted_content: 'encrypted-reasoning',
+};
+const responseMessage = {
+  type: 'message',
+  role: 'assistant',
+  content: [{ type: 'output_text', text: 'Checking.' }],
+};
+const responseUsage = {
+  input_tokens: 16,
+  input_tokens_details: { cached_tokens: 8, cache_write_tokens: 2 },
+  output_tokens: 4,
+  output_tokens_details: { reasoning_tokens: 3 },
+  total_tokens: 20,
+};
+
+test('OpenAI requests with tools use Responses, without tools use Chat Completions', async (t) => {
+  mockResponsesHttp(t, (url, init) => {
+    if (url.href === `${deploymentUrl}openai${completionPath}`) {
+      assert.deepEqual(bodyOf(init), {
+        model: openAIModel,
+        messages,
+        reasoning_effort: 'low',
+        max_completion_tokens: 8192,
+        stop: ['END'],
+      });
+      return Response.json({
+        choices: [{ message: { content: 'Hello' }, finish_reason: 'stop' }],
+        usage: openAIUsage,
+      });
+    }
+    assert.equal(url.href, `${deploymentUrl}openai/responses`);
     assert.deepEqual(bodyOf(init), {
       model: openAIModel,
-      messages,
-      tools,
-      tool_choice: 'auto',
-      max_completion_tokens: 8192,
-      stop: ['END'],
+      input: messages,
+      tools: [{ type: 'function', ...tools[0].function, strict: false }],
+      reasoning: { effort: 'xhigh' },
+      max_output_tokens: 8192,
+      store: false,
+      include: ['reasoning.encrypted_content'],
     });
     return Response.json({
-      choices: [
-        {
-          finish_reason: 'tool_calls',
-          message: {
-            content: 'Checking.',
-            tool_calls: [
-              {
-                id: 'call_a',
-                type: 'function',
-                function: { name: 'lookup', arguments: '{"x":1}' },
-              },
-            ],
-          },
-        },
-      ],
-      usage: openAIUsage,
+      status: 'completed',
+      output: [responseReasoning, responseMessage, responseCall],
+      usage: responseUsage,
     });
   });
-  const result = await provider().chat(messages, tools, {
+  const foundation = provider(openAIModel, {
+    reasoningEffort: 'low',
     maxTokens: 8192,
-    stop: ['END'],
+  });
+  const chat = await foundation.chat(messages, [], { stop: ['END'] });
+  assert.equal(chat.content, 'Hello');
+  assert.deepEqual(chat.usage, expectedUsage);
+
+  const result = await foundation.chat(messages, tools, {
+    reasoningEffort: 'xhigh',
   });
   assert.equal(result.content, 'Checking.');
   assert.equal(result.finishReason, 'tool_calls');
   assert.deepEqual(result.toolCalls, [
-    { index: 0, id: 'call_a', name: 'lookup', arguments: '{"x":1}' },
+    { index: 2, id: 'call_a', name: 'lookup', arguments: '{"x":1}' },
   ]);
-  assert.deepEqual(result.usage, expectedUsage);
+  assert.deepEqual(result.usage, { ...expectedUsage, reasoningTokens: 3 });
+  assert.deepEqual(result.providerOutput?.items[0], responseReasoning);
+});
+
+test('plain chat skips configuration and later tool requests share the cached lookup', async (t) => {
+  let configurationAvailable = false;
+  let configurationReads = 0;
+  let deploymentReads = 0;
+  mockHttp(t, (url, init) => {
+    if (url.pathname === '/v2/lm/deployments') {
+      deploymentReads++;
+      return list('openai-config');
+    }
+    if (url.pathname === '/v2/lm/configurations/openai-config') {
+      assert.equal(init?.method ?? 'GET', 'GET');
+      configurationReads++;
+      return configurationAvailable
+        ? Response.json({ executableId: 'azure-openai' })
+        : new Response(null, { status: 403 });
+    }
+    if (url.href === `${deploymentUrl}openai${completionPath}`) {
+      return Response.json({ choices: [{ message: { content: 'Hello' } }] });
+    }
+    assert.equal(url.href, `${deploymentUrl}openai/responses`);
+    return Response.json({ status: 'completed', output: [responseMessage] });
+  });
+
+  const foundation = provider();
+  assert.equal((await foundation.chat(messages)).content, 'Hello');
+  assert.equal((await foundation.chat(messages, [])).content, 'Hello');
+  assert.equal(configurationReads, 0);
+
+  configurationAvailable = true;
+  const concurrent = await Promise.all([
+    foundation.chat(messages, tools),
+    foundation.chat(messages, tools),
+  ]);
+  assert.deepEqual(
+    concurrent.map((result) => result.content),
+    ['Checking.', 'Checking.'],
+  );
+  assert.equal((await foundation.chat(messages, tools)).content, 'Checking.');
+  assert.equal(configurationReads, 1);
+  assert.equal(deploymentReads, 1);
+});
+
+test('a failed configuration lookup preserves the HTTP status and can be retried', async (t) => {
+  const { signal } = new AbortController();
+  let configurationReads = 0;
+  mockHttp(t, (url, init) => {
+    if (url.pathname === '/v2/lm/deployments') return list('openai-config');
+    if (url.pathname === '/v2/lm/configurations/openai-config') {
+      assert.equal(init?.signal, signal);
+      configurationReads++;
+      return configurationReads === 1
+        ? new Response(null, { status: 403 })
+        : Response.json({ executableId: 'azure-openai' });
+    }
+    assert.equal(url.href, `${deploymentUrl}openai/responses`);
+    return Response.json({ status: 'completed', output: [responseMessage] });
+  });
+
+  const foundation = provider();
+  await assert.rejects(foundation.chat(messages, tools, { signal }), {
+    name: 'LlmError',
+    status: 403,
+  });
+  const result = await foundation.chat(messages, tools, { signal });
+  assert.equal(result.content, 'Checking.');
+  assert.equal(configurationReads, 2);
+});
+
+test('OpenAI tool streams consume data-only Responses SSE and preserve reasoning', async (t) => {
+  mockResponsesHttp(t, (url, init) => {
+    assert.equal(url.href, `${deploymentUrl}openai/responses`);
+    assert.deepEqual(bodyOf(init), {
+      model: openAIModel,
+      input: messages,
+      tools: [{ type: 'function', ...tools[0].function, strict: false }],
+      store: false,
+      include: ['reasoning.encrypted_content'],
+      stream: true,
+      reasoning: { effort: 'medium' },
+    });
+    return sse(
+      sseFrames(
+        {
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: responseReasoning,
+        },
+        { type: 'response.output_text.delta', delta: 'Checking.' },
+        {
+          type: 'response.output_item.added',
+          output_index: 1,
+          item: { ...responseCall, arguments: '' },
+        },
+        {
+          type: 'response.function_call_arguments.delta',
+          output_index: 1,
+          delta: '{"x":',
+        },
+        {
+          type: 'response.function_call_arguments.delta',
+          output_index: 1,
+          delta: '1}',
+        },
+        {
+          type: 'response.function_call_arguments.done',
+          output_index: 1,
+          arguments: responseCall.arguments,
+        },
+        {
+          type: 'response.output_item.done',
+          output_index: 1,
+          item: responseCall,
+        },
+        {
+          type: 'response.output_item.done',
+          output_index: 2,
+          item: responseMessage,
+        },
+        {
+          type: 'response.completed',
+          response: { status: 'completed', usage: responseUsage },
+        },
+      ),
+    );
+  });
+  const { records, usage } = captureUsage();
+  const chunks = await collect(
+    provider(openAIModel, { usage }).streamChat(messages, tools, {
+      reasoningEffort: 'medium',
+    }),
+  );
+  const deltas = chunks.flatMap((chunk) => chunk.toolCalls ?? []);
+  assert.equal(chunks.map((chunk) => chunk.content).join(''), 'Checking.');
+  assert.deepEqual(deltas[0], { index: 1, id: 'call_a', name: 'lookup' });
+  assert.equal(deltas.map((call) => call.arguments).join(''), '{"x":1}');
+  assert.equal(chunks.at(-1)?.finishReason, 'tool_calls');
+  assert.deepEqual(chunks.at(-1)?.providerOutput?.items, [
+    responseReasoning,
+    responseCall,
+    responseMessage,
+  ]);
+  assert.deepEqual(chunks.at(-1)?.usage, {
+    ...expectedUsage,
+    reasoningTokens: 3,
+  });
+  assert.equal(records.length, 1);
+  assert.equal(records[0].outcome, 'ok');
+});
+
+test('OpenAI Responses rejects a stream that ends without a terminal event', async (t) => {
+  mockResponsesHttp(t, () =>
+    sse(sseFrames({ type: 'response.output_text.delta', delta: 'Partial' })),
+  );
+  await assert.rejects(collect(provider().streamChat(messages, tools)), {
+    name: 'LlmError',
+    message: 'SAP AI Core Responses stream ended before completion',
+  });
+});
+
+for (const status of [400, 422]) {
+  test(`OpenAI Responses preserves the provider explanation for HTTP ${status}`, async (t) => {
+    mockResponsesHttp(t, (url) => {
+      assert.equal(url.href, `${deploymentUrl}openai/responses`);
+      return Response.json(
+        { error: { message: 'Unsupported reasoning effort' } },
+        { status },
+      );
+    });
+    const foundation = provider();
+    await assert.rejects(foundation.chat(messages, tools), {
+      name: 'LlmError',
+      status,
+      message: `SAP AI Core foundation request failed (HTTP ${status}): Unsupported reasoning effort`,
+    });
+  });
+}
+
+test('OpenAI Responses omits echoed request data from HTTP 422 errors', async (t) => {
+  mockResponsesHttp(t, (url) => {
+    assert.equal(url.href, `${deploymentUrl}openai/responses`);
+    return Response.json(
+      { request: { headers: { Authorization: 'Bearer echoed-token' } } },
+      { status: 422 },
+    );
+  });
+  await assert.rejects(provider().chat(messages, tools), {
+    name: 'LlmError',
+    status: 422,
+    message: 'SAP AI Core foundation request failed (HTTP 422)',
+  });
+});
+
+test('OpenAI Responses accepts a top-level message when the nested message is not a string', async (t) => {
+  mockResponsesHttp(t, () =>
+    Response.json(
+      { error: { message: { code: 42 } }, message: 'Invalid input' },
+      { status: 400 },
+    ),
+  );
+  await assert.rejects(provider().chat(messages, tools), {
+    name: 'LlmError',
+    status: 400,
+    message: 'SAP AI Core foundation request failed (HTTP 400): Invalid input',
+  });
+});
+
+test('uses each deployment configuration once and refreshes the tool protocol on 404', async (t) => {
+  const model = 'tool-capable-model';
+  const configurationPath = '/v2/lm/configurations/';
+  const lookups: string[] = [];
+  let active = 'azure';
+  mockHttp(t, (url, init) => {
+    if (url.pathname === '/v2/lm/deployments') {
+      return Response.json({ resources: [deployment(model, active, active)] });
+    }
+    if (url.pathname.startsWith(configurationPath)) {
+      assert.equal(init?.method ?? 'GET', 'GET');
+      assert.equal(
+        new Headers(init?.headers).get('AI-Resource-Group'),
+        'test-group',
+      );
+      const id = url.pathname.slice(configurationPath.length);
+      lookups.push(id);
+      return Response.json({
+        executableId: id === 'azure' ? 'azure-openai' : 'aicore-mistralai',
+      });
+    }
+    if (url.href === `${deploymentUrl}azure/responses`) {
+      assert.deepEqual(
+        bodyOf<{ input: typeof messages }>(init).input,
+        messages,
+      );
+      return active === 'azure'
+        ? Response.json({ status: 'completed', output: [responseMessage] })
+        : new Response(null, { status: 404 });
+    }
+    assert.equal(url.href, `${deploymentUrl}mistral${completionPath}`);
+    assert.deepEqual(bodyOf(init), {
+      model,
+      messages,
+      tools,
+      tool_choice: 'auto',
+    });
+    return Response.json({
+      choices: [
+        { message: { content: 'Mistral reply' }, finish_reason: 'stop' },
+      ],
+    });
+  });
+
+  const llm = provider(model, { reasoningEffort: 'low' });
+  const first = await Promise.all([
+    llm.chat(messages, tools),
+    llm.chat(messages, tools),
+  ]);
+  assert.deepEqual(
+    first.map((result) => result.content),
+    ['Checking.', 'Checking.'],
+  );
+  active = 'mistral';
+  assert.equal((await llm.chat(messages, tools)).content, 'Mistral reply');
+  assert.equal((await llm.chat(messages, tools)).content, 'Mistral reply');
+  assert.deepEqual(lookups, ['azure', 'mistral']);
 });
 
 test('Anthropic chat sends Bedrock messages, remaps historical tools and controls cache breakpoints', async (t) => {
@@ -578,7 +890,7 @@ test('OpenAI SSE handles split UTF-8, argument deltas, usage and the terminal se
       )}data: must be ignored\r\n\r\n`,
     );
   });
-  const chunks = await collect(provider().streamChat(messages, tools));
+  const chunks = await collect(provider().streamChat(messages));
   assert.equal(chunks.map((chunk) => chunk.content).join(''), 'Hello 🌍');
   assert.equal(
     chunks.find((chunk) => chunk.finishReason)?.finishReason,
@@ -679,7 +991,7 @@ test('OpenAI SSE leaves empty tool arguments intact when generation ends at the 
           ),
         ),
   );
-  const chunks = await collect(provider().streamChat(messages, tools));
+  const chunks = await collect(provider().streamChat(messages));
   assert.equal(chunks.at(-1)?.finishReason, 'length');
   assert.deepEqual(
     chunks.flatMap((chunk) => chunk.toolCalls ?? []),
@@ -959,6 +1271,38 @@ test('foundation reports an unsupported or missing stream content type as a fail
     records.map((record) => [record.kind, record.outcome]),
     Array.from({ length: 4 }, () => ['llm.call', 'error']),
   );
+});
+
+test('classifies plain-text HTTP context overflow without exposing the body', async (t) => {
+  mockResponsesHttp(
+    t,
+    () =>
+      new Response('maximum context length exceeded: echoed request data', {
+        status: 400,
+      }),
+  );
+  await assert.rejects(provider().chat(messages, tools), {
+    name: 'LlmError',
+    code: MODEL_CONTEXT_EXCEEDED,
+    status: 400,
+    message: 'SAP AI Core model context exceeded',
+  });
+});
+
+test('uses only the provider message from a structured HTTP context error', async (t) => {
+  const message = 'Maximum context length exceeded';
+  mockResponsesHttp(t, () =>
+    Response.json(
+      { error: { message }, request: 'echoed request data' },
+      { status: 400 },
+    ),
+  );
+  await assert.rejects(provider().chat(messages, tools), {
+    name: 'LlmError',
+    code: MODEL_CONTEXT_EXCEEDED,
+    status: 400,
+    message,
+  });
 });
 
 for (const [model, overflow] of [

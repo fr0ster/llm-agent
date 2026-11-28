@@ -5,6 +5,7 @@ import type {
   LlmRequestFacts,
   LlmUsage,
   Message,
+  ReasoningEffort,
 } from '@mcp-abap-adt/llm-agent';
 
 /** One message as the OpenAI chat completions payload carries it. */
@@ -28,6 +29,7 @@ interface OpenAIUsage {
     cache_write_tokens?: number;
   };
   prompt_cache_hit_tokens?: number;
+  completion_tokens_details?: { reasoning_tokens?: number };
 }
 
 export interface OpenAIChatResponse extends OpenAIErrorResponse {
@@ -117,7 +119,18 @@ export function requestBody(
     model: string,
     maxTokens: number,
   ) => Record<string, number> = tokenLimitParam,
-) {
+): {
+  model: string;
+  messages: OpenAIWireMessage[];
+  tools?: Parameters<LLMProvider['chat']>[1];
+  tool_choice?: 'auto';
+  temperature?: number;
+  reasoning_effort?: ReasoningEffort;
+  max_tokens?: number;
+  max_completion_tokens?: number;
+  top_p?: number;
+  stop?: string[];
+} {
   return {
     model,
     messages,
@@ -127,6 +140,9 @@ export function requestBody(
       ? { temperature: options.temperature }
       : {}),
     ...(options.maxTokens !== undefined ? limit(model, options.maxTokens) : {}),
+    ...(options.reasoningEffort !== undefined
+      ? { reasoning_effort: options.reasoningEffort }
+      : {}),
     ...(options.topP !== undefined ? { top_p: options.topP } : {}),
     ...(options.stop ? { stop: options.stop } : {}),
   };
@@ -164,8 +180,10 @@ export function chatResponse(
 }
 
 function normalizedUsage(usage: OpenAIUsage): LlmUsage {
+  const reasoningTokens = usage.completion_tokens_details?.reasoning_tokens;
   return {
     ...cacheUsage(usage),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
     promptTokens: usage.prompt_tokens,
     completionTokens: usage.completion_tokens,
     totalTokens: usage.total_tokens,

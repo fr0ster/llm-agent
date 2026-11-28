@@ -174,12 +174,20 @@ export async function buildDestination(cfg: {
  * (gpt-5, o-series and claude-opus-4-7+ reject any temperature but 1).
  */
 export function orchestrationModelParams(
-  cfg: { maxTokens?: number; temperature?: number },
+  cfg: Pick<LLMProviderConfig, 'maxTokens' | 'temperature' | 'reasoningEffort'>,
   hasTools: boolean,
-): Record<string, unknown> {
+): {
+  max_tokens?: number;
+  temperature?: number;
+  reasoning_effort?: LLMProviderConfig['reasoningEffort'];
+  tool_choice?: 'auto';
+} {
   return {
     ...(cfg.maxTokens !== undefined ? { max_tokens: cfg.maxTokens } : {}),
     ...(cfg.temperature !== undefined ? { temperature: cfg.temperature } : {}),
+    ...(cfg.reasoningEffort !== undefined
+      ? { reasoning_effort: cfg.reasoningEffort }
+      : {}),
     ...(hasTools ? { tool_choice: 'auto' } : {}),
   };
 }
@@ -906,7 +914,15 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         model: {
           name: this.modelOverride ?? this.model,
           params: {
-            ...orchestrationModelParams(this.config, !!tools?.length),
+            ...orchestrationModelParams(
+              {
+                maxTokens: this.config.maxTokens,
+                temperature: this.config.temperature,
+                reasoningEffort:
+                  options?.reasoningEffort ?? this.config.reasoningEffort,
+              },
+              !!tools?.length,
+            ),
             ...(cachedTools?.length && !tools?.length
               ? { tool_choice: 'none' }
               : {}),
@@ -932,38 +948,43 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
   private formatMessages(
     messages: Message[],
   ): Array<Exclude<ChatMessage, { role: 'developer' }>> {
-    return messages.map((msg): Exclude<ChatMessage, { role: 'developer' }> => {
-      if (
-        msg.role === 'assistant' &&
-        msg.tool_calls &&
-        msg.tool_calls.length > 0
-      ) {
+    return messages.map(
+      ({
+        providerOutput: _providerOutput,
+        ...msg
+      }): Exclude<ChatMessage, { role: 'developer' }> => {
+        if (
+          msg.role === 'assistant' &&
+          msg.tool_calls &&
+          msg.tool_calls.length > 0
+        ) {
+          return {
+            ...msg,
+            role: 'assistant' as const,
+            content: msg.content || undefined,
+            tool_calls: msg.tool_calls,
+          };
+        }
+
+        if (msg.role === 'tool' && msg.tool_call_id) {
+          return {
+            ...msg,
+            role: 'tool' as const,
+            content:
+              typeof msg.content === 'string'
+                ? msg.content
+                : JSON.stringify(msg.content ?? ''),
+            tool_call_id: msg.tool_call_id,
+          };
+        }
+
         return {
           ...msg,
-          role: 'assistant' as const,
-          content: msg.content || undefined,
-          tool_calls: msg.tool_calls,
+          role: msg.role as 'user' | 'system',
+          content: msg.content ?? '',
         };
-      }
-
-      if (msg.role === 'tool' && msg.tool_call_id) {
-        return {
-          ...msg,
-          role: 'tool' as const,
-          content:
-            typeof msg.content === 'string'
-              ? msg.content
-              : JSON.stringify(msg.content ?? ''),
-          tool_call_id: msg.tool_call_id,
-        };
-      }
-
-      return {
-        ...msg,
-        role: msg.role as 'user' | 'system',
-        content: msg.content ?? '',
-      };
-    });
+      },
+    );
   }
 }
 
