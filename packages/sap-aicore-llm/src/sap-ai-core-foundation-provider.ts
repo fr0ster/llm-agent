@@ -606,7 +606,8 @@ export class SapAiCoreFoundationProvider extends BaseLLMProvider<SapAiCoreFounda
             return true;
           }
           if (error instanceof UnsupportedSamplingError) {
-            (deployment.unsupportedSampling ??= new Set()).add(error.parameter);
+            deployment.unsupportedSampling ??= new Set();
+            deployment.unsupportedSampling.add(error.parameter);
             if (!samplingRetried) {
               samplingRetried = true;
               return true;
