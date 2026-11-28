@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent-server-libs",
-  "version": "34.4.0",
+  "version": "34.4.1",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -75,7 +75,7 @@
     }
   },
   "devDependencies": {
-    "@mcp-abap-adt/sap-aicore-llm": "^31.3.0",
+    "@mcp-abap-adt/sap-aicore-llm": "^31.3.1",
     "@types/pg": "^8.23.1"
   },
   "publishConfig": {
