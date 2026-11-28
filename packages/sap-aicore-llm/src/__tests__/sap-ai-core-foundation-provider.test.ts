@@ -755,7 +755,7 @@ test('does not repeat a Responses stream after its first chunk', async (t) => {
       ),
     );
   });
-  const chunks = [];
+  const chunks: LLMResponse['content'][] = [];
   await assert.rejects(
     async () => {
       for await (const chunk of provider().streamChat(messages, tools, {
