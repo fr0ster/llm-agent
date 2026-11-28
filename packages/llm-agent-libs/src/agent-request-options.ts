@@ -1,4 +1,5 @@
 import type { CallOptions, IRequestLogger } from '@mcp-abap-adt/llm-agent';
+import { redactingSessionLogger } from './logger/redact-provider-output.js';
 
 /**
  * Normalize per-request options at the top of a turn: write the (possibly
@@ -25,5 +26,8 @@ export function normalizeRequestOptions(
     ...opts,
     trace: { ...opts?.trace, traceId },
     requestLogger,
+    ...(opts?.sessionLogger && {
+      sessionLogger: redactingSessionLogger(opts.sessionLogger),
+    }),
   };
 }

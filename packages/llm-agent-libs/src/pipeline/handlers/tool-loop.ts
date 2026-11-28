@@ -10,6 +10,7 @@ import {
   llmWithChatUsage,
   withUsageCalls,
 } from '../../logger/llm-call-usage.js';
+import { redactProviderOutput } from '../../logger/redact-provider-output.js';
 import {
   logToolLoopAttempt,
   recordThrownLlmUsage,
@@ -65,7 +66,10 @@ import { fireInternalToolsAsync } from '../../policy/mixed-tool-call-handler.js'
 import type { ISpan } from '../../tracer/types.js';
 import { LegacyAccumulateContextStrategy } from '../context/tool-loop-context/index.js';
 import { ToolLoopControlHistory } from '../context/tool-loop-control-history.js';
-import type { PipelineContext } from '../context.js';
+import {
+  type PipelineContext,
+  withRedactedPipelineLogger,
+} from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 import { normalizeHeartbeatMs } from './normalize-heartbeat-ms.js';
 import {
@@ -84,24 +88,20 @@ import { wrapFinalResponse } from './wrap-final-response.js';
 function summarizeIterationMessages(
   messages: Message[],
 ): Record<string, unknown> {
-  const totalChars = messages.reduce((sum, msg) => {
-    const content =
-      typeof msg.content === 'string'
-        ? msg.content
-        : JSON.stringify(msg.content ?? '');
-    return sum + content.length;
-  }, 0);
+  const contents = messages.map(({ content }) =>
+    typeof content === 'string'
+      ? content
+      : JSON.stringify(redactProviderOutput(content ?? '')),
+  );
+  const tailStart = Math.max(0, messages.length - 6);
 
   return {
     messageCount: messages.length,
-    totalChars,
+    totalChars: contents.reduce((sum, content) => sum + content.length, 0),
     roles: messages.map((msg, index) => ({
       index,
       role: msg.role,
-      contentLength:
-        typeof msg.content === 'string'
-          ? msg.content.length
-          : JSON.stringify(msg.content ?? '').length,
+      contentLength: contents[index].length,
       hasToolCalls: 'tool_calls' in msg && Array.isArray(msg.tool_calls),
       toolCallCount:
         'tool_calls' in msg && Array.isArray(msg.tool_calls)
@@ -109,13 +109,11 @@ function summarizeIterationMessages(
           : 0,
       toolCallId: 'tool_call_id' in msg ? (msg.tool_call_id ?? null) : null,
     })),
-    tail: messages.slice(-6).map((msg, index) => {
-      const content =
-        typeof msg.content === 'string'
-          ? msg.content
-          : JSON.stringify(msg.content ?? '');
+    tail: messages.slice(tailStart).map((msg, offset) => {
+      const index = tailStart + offset;
+      const content = contents[index];
       return {
-        index: messages.length - Math.min(messages.length, 6) + index,
+        index,
         role: msg.role,
         preview:
           content.length > 240
@@ -158,6 +156,7 @@ export class ToolLoopHandler implements IStageHandler {
     config: Record<string, unknown>,
     parentSpan: ISpan,
   ): Promise<boolean> {
+    ctx = withRedactedPipelineLogger(ctx);
     const identity =
       ctx.callerResolution ?? resolveCallerIdentity(ctx.options, ctx.sessionId);
     const maxIterations = normalizeLoopLimit(

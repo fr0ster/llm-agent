@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DebugArea } from './debug-areas.js';
+import { redactProviderOutput } from './redact-provider-output.js';
 
 /** Enabled trace areas: 'all' = legacy logDir mode (every step, incl. the
  *  untagged `general` sentinel); a Set = only those areas' tagged steps. */
@@ -95,10 +96,14 @@ export class SessionLogger {
     }
 
     try {
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), {
-        encoding: 'utf8',
-        mode: 0o600,
-      });
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify(redactProviderOutput(data), null, 2),
+        {
+          encoding: 'utf8',
+          mode: 0o600,
+        },
+      );
       this.fileIndex++;
     } catch (err) {
       console.error(`Failed to write log file: ${filePath}`, err);

@@ -583,21 +583,220 @@ test('OpenAI Responses rejects a stream that ends without a terminal event', asy
   });
 });
 
+for (const route of ['responses', 'chat/completions']) {
+  for (const stream of [false, true]) {
+    test(`${route} ${stream ? 'stream' : 'chat'} learns a rejected sampling parameter`, async (t) => {
+      const useResponses = route === 'responses';
+      const parameter = stream ? 'top_p' : 'temperature';
+      const bodies: Array<{ temperature?: number; top_p?: number }> = [];
+      const { records, usage } = captureUsage();
+      mockResponsesHttp(t, (url, init) => {
+        assert.equal(url.pathname, `/v2/inference/deployments/openai/${route}`);
+        bodies.push(bodyOf(init));
+        if (bodies.length === 1) {
+          return Response.json(
+            {
+              error: {
+                param: parameter,
+                code: stream
+                  ? 'unsupported_value'
+                  : useResponses
+                    ? 'unsupported_parameter'
+                    : undefined,
+              },
+            },
+            { status: 400 },
+          );
+        }
+        if (useResponses) {
+          const response = { status: 'completed', output: [responseMessage] };
+          return stream
+            ? sse(
+                sseFrames(
+                  { type: 'response.output_text.delta', delta: 'Checking.' },
+                  { type: 'response.completed', response },
+                ),
+              )
+            : Response.json(response);
+        }
+        return stream
+          ? sse(
+              sseFrames(
+                {
+                  choices: [
+                    { delta: { content: 'Checking.' }, finish_reason: 'stop' },
+                  ],
+                },
+                '[DONE]',
+              ),
+            )
+          : Response.json({ choices: [{ message: { content: 'Checking.' } }] });
+      });
+      const llm = provider(openAIModel, { temperature: 0, usage });
+      const routeTools = useResponses ? tools : undefined;
+      const options = { topP: 0.8, reasoningEffort: 'high' as const };
+      for (let call = 0; call < 2; call++) {
+        const content = stream
+          ? (await collect(llm.streamChat(messages, routeTools, options)))
+              .map((chunk) => chunk.content)
+              .join('')
+          : (await llm.chat(messages, routeTools, options)).content;
+        assert.equal(content, 'Checking.');
+      }
+      assert.equal(bodies.length, 3);
+      assert.equal(bodies[0].temperature, 0);
+      assert.equal(bodies[0].top_p, 0.8);
+      for (const body of bodies.slice(1)) {
+        assert.equal(Object.hasOwn(body, parameter), false);
+        assert.equal(stream ? body.temperature : body.top_p, stream ? 0 : 0.8);
+      }
+      assert.deepEqual(
+        records.map(({ outcome }) => outcome),
+        ['error', 'ok', 'ok'],
+      );
+    });
+  }
+}
+
+for (const method of ['chat', 'streamChat'] as const) {
+  test(`foundation ${method} restores sampling when the rejecting deployment is replaced`, async (t) => {
+    const posts: Array<{ url: string; temperature?: number }> = [];
+    mockHttp(t, (url, init) => {
+      if (url.pathname === '/v2/lm/deployments') {
+        const id = posts.length === 0 ? 'original' : 'replacement';
+        return Response.json({ resources: [deployment(openAIModel, id, id)] });
+      }
+      if (url.pathname.startsWith('/v2/lm/configurations/'))
+        return Response.json({ executableId: 'azure-openai' });
+
+      assert.equal(init?.method, 'POST');
+      const { temperature } = bodyOf<{ temperature?: number }>(init);
+      posts.push({ url: url.href, temperature });
+      if (posts.length === 1) {
+        return Response.json(
+          { error: { code: 'unsupported_parameter', param: 'temperature' } },
+          { status: 400 },
+        );
+      }
+      if (posts.length === 2) return new Response(null, { status: 404 });
+
+      const response = { status: 'completed', output: [responseMessage] };
+      return method === 'streamChat'
+        ? sse(
+            sseFrames(
+              { type: 'response.output_text.delta', delta: 'Checking.' },
+              { type: 'response.completed', response },
+            ),
+          )
+        : Response.json(response);
+    });
+
+    const llm = provider();
+    const options = { temperature: 0.5 };
+    const content =
+      method === 'streamChat'
+        ? (await collect(llm.streamChat(messages, tools, options)))
+            .map((chunk) => chunk.content)
+            .join('')
+        : (await llm.chat(messages, tools, options)).content;
+
+    assert.equal(content, 'Checking.');
+    assert.deepEqual(posts, [
+      { url: `${deploymentUrl}original/responses`, temperature: 0.5 },
+      { url: `${deploymentUrl}original/responses`, temperature: undefined },
+      { url: `${deploymentUrl}replacement/responses`, temperature: 0.5 },
+    ]);
+  });
+}
+
+test('learns both rejected parameters with at most one repeat and shares the cache across routes', async (t) => {
+  let requests = 0;
+  mockResponsesHttp(t, (url, init) => {
+    requests++;
+    const body = bodyOf(init);
+    if (requests <= 2) {
+      assert.equal(url.pathname, '/v2/inference/deployments/openai/responses');
+      const parameter = requests === 1 ? 'temperature' : 'top_p';
+      assert.ok(Object.hasOwn(body, parameter));
+      assert.equal(Object.hasOwn(body, 'temperature'), requests === 1);
+      return Response.json(
+        {
+          error: { param: parameter, message: `Unsupported ${parameter}` },
+        },
+        { status: 400 },
+      );
+    }
+    assert.equal(url.href, `${deploymentUrl}openai${completionPath}`);
+    assert.equal(Object.hasOwn(body, 'temperature'), false);
+    assert.equal(Object.hasOwn(body, 'top_p'), false);
+    return Response.json({ choices: [{ message: { content: 'Hello' } }] });
+  });
+  const llm = provider();
+  const options = { temperature: 0.5, topP: 0.8 };
+  await assert.rejects(llm.chat(messages, tools, options), {
+    name: 'LlmError',
+    status: 400,
+    message:
+      'SAP AI Core foundation request failed (HTTP 400): Unsupported top_p',
+  });
+  assert.equal(requests, 2);
+  assert.equal((await llm.chat(messages, undefined, options)).content, 'Hello');
+  assert.equal(requests, 3);
+});
+
+test('does not repeat a Responses stream after its first chunk', async (t) => {
+  let requests = 0;
+  mockResponsesHttp(t, () => {
+    requests++;
+    return sse(
+      sseFrames(
+        { type: 'response.output_text.delta', delta: 'Partial' },
+        { type: 'error', code: 'unsupported_parameter', param: 'temperature' },
+      ),
+    );
+  });
+  const chunks = [];
+  await assert.rejects(
+    async () => {
+      for await (const chunk of provider().streamChat(messages, tools, {
+        temperature: 0.5,
+      })) {
+        chunks.push(chunk.content);
+      }
+    },
+    { name: 'LlmError', message: 'SAP AI Core foundation inference failed' },
+  );
+  assert.deepEqual(chunks, ['Partial']);
+  assert.equal(requests, 1);
+});
+
 for (const status of [400, 422]) {
   test(`OpenAI Responses preserves the provider explanation for HTTP ${status}`, async (t) => {
+    let requests = 0;
     mockResponsesHttp(t, (url) => {
+      requests++;
       assert.equal(url.href, `${deploymentUrl}openai/responses`);
       return Response.json(
-        { error: { message: 'Unsupported reasoning effort' } },
+        {
+          error: {
+            code: 'unsupported_value',
+            param: 'reasoning.effort',
+            message: 'Unsupported reasoning effort',
+          },
+        },
         { status },
       );
     });
     const foundation = provider();
-    await assert.rejects(foundation.chat(messages, tools), {
-      name: 'LlmError',
-      status,
-      message: `SAP AI Core foundation request failed (HTTP ${status}): Unsupported reasoning effort`,
-    });
+    await assert.rejects(
+      foundation.chat(messages, tools, { temperature: 0.5, topP: 0.8 }),
+      {
+        name: 'LlmError',
+        status,
+        message: `SAP AI Core foundation request failed (HTTP ${status}): Unsupported reasoning effort`,
+      },
+    );
+    assert.equal(requests, 1);
   });
 }
 

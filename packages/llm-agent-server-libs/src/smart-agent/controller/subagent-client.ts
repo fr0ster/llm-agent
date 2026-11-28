@@ -5,6 +5,7 @@ import {
   type LlmTool,
   type Message,
 } from '@mcp-abap-adt/llm-agent';
+import { redactingSessionLogger } from '@mcp-abap-adt/llm-agent-libs';
 import type { SubagentResult } from './types.js';
 
 export interface ISubagentClient {
@@ -46,20 +47,23 @@ export function makeSubagentClient(llm: ILlm): ISubagentClient {
   return {
     async send(messages, tools, options) {
       const n = ++seq;
-      options?.sessionLogger?.logStep(
+      const sessionLogger = redactingSessionLogger(options?.sessionLogger);
+      sessionLogger?.logStep(
         `llm_request_${n}`,
         { messages, tools: tools ?? [] },
         'llm',
       );
-      const r = await llm.chat(messages, tools, options);
+      const r = await llm.chat(
+        messages,
+        tools,
+        options && sessionLogger !== options.sessionLogger
+          ? { ...options, sessionLogger }
+          : options,
+      );
       if (!r.ok) {
         const contextOverflow = contextExceededError(r.error);
         const message = r.error?.message ?? 'subagent llm error';
-        options?.sessionLogger?.logStep(
-          `llm_response_${n}`,
-          { error: message },
-          'llm',
-        );
+        sessionLogger?.logStep(`llm_response_${n}`, { error: message }, 'llm');
         return {
           kind: 'error',
           error: message,
@@ -67,7 +71,7 @@ export function makeSubagentClient(llm: ILlm): ISubagentClient {
         };
       }
       const v = r.value;
-      options?.sessionLogger?.logStep(
+      sessionLogger?.logStep(
         `llm_response_${n}`,
         {
           content: v.content ?? '',

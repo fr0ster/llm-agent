@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { ILlm } from '@mcp-abap-adt/llm-agent';
+import type { ILlm, Message } from '@mcp-abap-adt/llm-agent';
 import { LlmFinalizer } from '../finalizer.js';
 import { makeControllerPlanner } from '../planner.js';
 import { LlmReviewer } from '../reviewer.js';
@@ -43,6 +43,55 @@ test('send emits llm_request + llm_response tagged "llm" with content', async ()
     { role: 'user', content: 'hi' },
   ]);
   assert.equal((res.data as { content: string }).content, 'hello');
+});
+
+test('controller traces redact the messages sent to a subagent', async () => {
+  const messages: Message[] = [
+    {
+      role: 'assistant',
+      content: 'visible',
+      providerOutput: {
+        protocol: 'openai.responses',
+        items: [{ type: 'reasoning', encrypted_content: 'private-reasoning' }],
+      },
+    },
+  ];
+  const client = makeSubagentClient({
+    ...fakeLlm(),
+    async chat(input, _tools, options) {
+      assert.equal(input, messages);
+      assert.deepEqual(input[0].providerOutput?.items, [
+        { type: 'reasoning', encrypted_content: 'private-reasoning' },
+      ]);
+      const value = {
+        content: 'done',
+        providerOutput: input[0].providerOutput,
+      };
+      options?.sessionLogger?.logStep('llm_inner', value, 'llm');
+      return { ok: true, value };
+    },
+  });
+  const steps: Array<{ name: string; data: string; area?: string }> = [];
+  await client.send(messages, undefined, {
+    sessionLogger: {
+      logStep(name, data, area) {
+        steps.push({ name, data: JSON.stringify(data), area });
+      },
+    },
+  });
+  assert.deepEqual(steps[0], {
+    name: 'llm_request_1',
+    data: JSON.stringify({
+      messages: [{ role: 'assistant', content: 'visible' }],
+      tools: [],
+    }),
+    area: 'llm',
+  });
+  assert.deepEqual(steps[1], {
+    name: 'llm_inner',
+    data: JSON.stringify({ content: 'done' }),
+    area: 'llm',
+  });
 });
 
 test('no sessionLogger → send still works, no throw', async () => {

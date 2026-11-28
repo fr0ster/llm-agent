@@ -106,6 +106,39 @@ test('rejects the unsupported stop option in Responses requests', () => {
   }
 });
 
+test('sends exactly the sampling options supplied for every model and reasoning effort', () => {
+  for (const name of [model, 'gpt-5', 'o3-mini', 'deployment-alias']) {
+    for (const reasoningEffort of [undefined, 'high', 'none'] as const) {
+      const options = { reasoningEffort };
+      const body = requestBody(
+        name,
+        messages,
+        tools,
+        { ...options, temperature: 0, topP: 0.8 },
+        false,
+      );
+      assert.equal(body.temperature, 0);
+      assert.equal(body.top_p, 0.8);
+      assert.equal(
+        'temperature' in
+          requestBody(name, messages, tools, { ...options, topP: 0.8 }, false),
+        false,
+      );
+      assert.equal(
+        'top_p' in
+          requestBody(
+            name,
+            messages,
+            tools,
+            { ...options, temperature: 0 },
+            false,
+          ),
+        false,
+      );
+    }
+  }
+});
+
 test('maps output and usage and replays exact output items with the original call ID', () => {
   const raw: OpenAIResponse = {
     status: 'completed',

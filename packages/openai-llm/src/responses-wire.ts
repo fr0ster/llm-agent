@@ -162,10 +162,6 @@ export function requestBody(
       'The OpenAI Responses API does not support the stop option',
     );
 
-  // GPT-6 and earlier reasoning models restrict sampling controls in reasoning mode.
-  const samplingSupported =
-    options.reasoningEffort === 'none' ||
-    !/^(?:gpt-[56](?:[.-]|$)|o\d)/i.test(model);
   return {
     model,
     input: formatInput(messages),
@@ -184,12 +180,10 @@ export function requestBody(
     ...(options.maxTokens !== undefined
       ? { max_output_tokens: options.maxTokens }
       : {}),
-    ...(samplingSupported && options.temperature !== undefined
+    ...(options.temperature !== undefined
       ? { temperature: options.temperature }
       : {}),
-    ...(samplingSupported && options.topP !== undefined
-      ? { top_p: options.topP }
-      : {}),
+    ...(options.topP !== undefined ? { top_p: options.topP } : {}),
     store: false,
     include: ['reasoning.encrypted_content'],
     ...(stream ? { stream: true } : {}),

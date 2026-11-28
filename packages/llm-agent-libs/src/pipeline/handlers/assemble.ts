@@ -18,7 +18,10 @@ import {
   OrchestratorError,
 } from '@mcp-abap-adt/llm-agent';
 import type { ISpan } from '../../tracer/types.js';
-import type { PipelineContext } from '../context.js';
+import {
+  type PipelineContext,
+  withRedactedPipelineLogger,
+} from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 
 export class AssembleHandler implements IStageHandler {
@@ -27,6 +30,7 @@ export class AssembleHandler implements IStageHandler {
     _config: Record<string, unknown>,
     span: ISpan,
   ): Promise<boolean> {
+    ctx = withRedactedPipelineLogger(ctx);
     const identity =
       ctx.callerResolution ?? resolveCallerIdentity(ctx.options, ctx.sessionId);
     const actions = ctx.subprompts.filter((sp) => sp.type === 'action');

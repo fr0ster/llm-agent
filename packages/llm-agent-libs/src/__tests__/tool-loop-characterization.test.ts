@@ -23,6 +23,7 @@ import type {
   LlmStreamChunk,
   LlmTool,
   Message,
+  ProviderOutput,
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
@@ -36,7 +37,8 @@ import {
 // A streaming LLM: iteration 1 → one tool call; iteration 2 → stop.
 function makeToolThenStopLlm(
   toolName: string,
-  onCall?: (i: number, tools: LlmTool[]) => void,
+  onCall?: (i: number, tools: LlmTool[], messages: Message[]) => void,
+  providerOutput?: ProviderOutput,
 ) {
   let callCount = 0;
   return {
@@ -50,11 +52,11 @@ function makeToolThenStopLlm(
       };
     },
     async *streamChat(
-      _msgs: Message[],
+      messages: Message[],
       tools?: LlmTool[],
     ): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
       callCount++;
-      onCall?.(callCount, tools ?? []);
+      onCall?.(callCount, tools ?? [], messages);
       if (callCount === 1) {
         yield {
           ok: true,
@@ -64,6 +66,7 @@ function makeToolThenStopLlm(
               { index: 0, id: 'tc_1', name: toolName, arguments: '{}' },
             ],
             finishReason: 'tool_calls',
+            ...(providerOutput && { providerOutput }),
           },
         };
       } else {
@@ -75,6 +78,79 @@ function makeToolThenStopLlm(
     },
   };
 }
+
+it('redacts provider output in session steps and replays it to the LLM after a tool call', async () => {
+  const providerOutput: ProviderOutput = {
+    protocol: 'openai.responses',
+    items: [{ type: 'reasoning', encrypted_content: 'private-reasoning' }],
+  };
+  const seenByLlm: Message[][] = [];
+  const stepData = new Map<string, string>();
+  const llm = makeToolThenStopLlm(
+    'GetTable',
+    (_iteration, _tools, messages) => seenByLlm.push(messages),
+    providerOutput,
+  );
+  const { deps } = makeDefaultDeps({
+    mcpClients: [
+      {
+        async listTools() {
+          return {
+            ok: true as const,
+            value: [
+              {
+                name: 'GetTable',
+                description: 'Read a table',
+                inputSchema: {},
+              },
+            ],
+          };
+        },
+        async callTool() {
+          return { ok: true as const, value: { content: 'table contents' } };
+        },
+      },
+    ],
+  });
+  deps.mainLlm = llm;
+  const input: Message[] = [
+    {
+      role: 'user',
+      content: 'Read the table',
+      metadata: {
+        nested: [{ providerOutput: 'private-metadata', keep: true }],
+      },
+    },
+  ];
+  const result = await new SmartAgent(deps, { mode: 'hard' }).process(
+    input,
+    testCallOptions({
+      sessionId: 'redacted-log',
+      sessionLogger: {
+        logStep(name, data) {
+          const json = JSON.stringify(data);
+          assert.doesNotMatch(
+            json,
+            /providerOutput|private-reasoning|private-metadata/,
+          );
+          stepData.set(name, json);
+        },
+      },
+    }),
+  );
+  assert.ok(result.ok);
+  assert.equal(result.value.content, 'done');
+  assert.match(stepData.get('pipeline_start') ?? '', /"keep":true/);
+  assert.match(stepData.get('llm_request_iter_2') ?? '', /table contents/);
+  assert.deepEqual(
+    seenByLlm[1]?.find((message) => message.role === 'assistant')
+      ?.providerOutput,
+    providerOutput,
+  );
+  assert.deepEqual(input[0].metadata?.nested, [
+    { providerOutput: 'private-metadata', keep: true },
+  ]);
+});
 
 describe('Loop A characterization — tool_loop span structure (#2)', () => {
   it('opens a smart_agent.tool_loop span that parents sub-spans and is ended', async () => {
