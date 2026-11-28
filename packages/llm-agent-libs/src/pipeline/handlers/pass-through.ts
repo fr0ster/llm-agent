@@ -16,6 +16,7 @@ import {
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import { withUsageCalls } from '../../logger/llm-call-usage.js';
+import { redactingSessionLogger } from '../../logger/redact-provider-output.js';
 import { summaryToUsage } from '../../logger/session-request-logger.js';
 import {
   logToolLoopAttempt,
@@ -39,9 +40,10 @@ export async function* runPassThrough(
   pendingToolResults: PendingToolResultsRegistry = new PendingToolResultsRegistry(),
   identity: CallerResolution = { kind: 'anonymous' },
 ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
+  const sessionLogger = redactingSessionLogger(opts?.sessionLogger);
   for (;;) {
     const traceId2 = opts?.trace?.traceId;
-    opts?.sessionLogger?.logStep(
+    sessionLogger?.logStep(
       'llm_request_pass',
       { messages, tools: externalTools ?? [] },
       'llm',
@@ -49,6 +51,7 @@ export async function* runPassThrough(
     const stream = () =>
       llm.streamChat(toModelToolMessages(messages, toolTrust), externalTools, {
         ...opts,
+        ...(sessionLogger && { sessionLogger }),
         usage: scopedUsage(opts?.usage, { component: 'tool-loop' }),
         includeStreamRetryUsage: true,
       });
@@ -81,7 +84,7 @@ export async function* runPassThrough(
         // write the response trace here for the same reason (#290): the trace
         // that matters most is the one for the call that failed, and leaving on
         // this path recorded the question and nothing else.
-        opts?.sessionLogger?.logStep(
+        sessionLogger?.logStep(
           'llm_response_pass',
           {
             error: {
@@ -149,7 +152,7 @@ export async function* runPassThrough(
       providerOutput,
     );
     const executable = hasToolCalls ? round.executableCalls() : [];
-    opts?.sessionLogger?.logStep(
+    sessionLogger?.logStep(
       'llm_response_pass',
       { content: passContent, ...round.diagnostics(executable), finishReason },
       'llm',

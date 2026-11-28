@@ -29,7 +29,10 @@ import { AbortErrorStrategy } from '../../coordinator/index.js';
 import { withUsageCalls } from '../../logger/llm-call-usage.js';
 import { summaryToUsage } from '../../logger/session-request-logger.js';
 import type { ISpan } from '../../tracer/types.js';
-import type { PipelineContext } from '../context.js';
+import {
+  type PipelineContext,
+  withRedactedPipelineLogger,
+} from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 import { logRoleUsage } from './role-usage.js';
 import { meterWorkers } from './worker-usage.js';
@@ -107,6 +110,7 @@ export class DagCoordinatorHandler implements IStageHandler {
     _rawConfig: Record<string, unknown>,
     _span: ISpan,
   ): Promise<boolean> {
+    ctx = withRedactedPipelineLogger(ctx);
     const caller = ctx.options?.caller;
     if (!caller) {
       ctx.error = new OrchestratorError(

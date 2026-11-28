@@ -63,6 +63,7 @@ import type {
 } from '../agent.js';
 import type { McpClientDescriptor } from '../interfaces/mcp-connection-strategy.js';
 import type { ToolCandidateFilter } from '../interfaces/pipeline.js';
+import { redactingSessionLogger } from '../logger/redact-provider-output.js';
 import type { IMetrics } from '../metrics/types.js';
 import type { CallerResolution } from '../policy/caller-identity.js';
 import type { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
@@ -259,4 +260,20 @@ export interface PipelineContext {
   currentStepIdx?: number;
   /** Per-step results captured by the coordinator, keyed by stepId. */
   stepResults?: Record<string, StepResult>;
+}
+
+export function withRedactedPipelineLogger(
+  ctx: PipelineContext,
+): PipelineContext {
+  const options = ctx.options;
+  const sessionLogger = redactingSessionLogger(options?.sessionLogger);
+  if (!options || sessionLogger === options.sessionLogger) return ctx;
+  const loggedOptions = { ...options, sessionLogger };
+  return new Proxy(ctx, {
+    get(target, key, receiver) {
+      return key === 'options'
+        ? loggedOptions
+        : Reflect.get(target, key, receiver);
+    },
+  });
 }

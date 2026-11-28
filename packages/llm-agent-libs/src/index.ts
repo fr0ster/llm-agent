@@ -131,6 +131,7 @@ export {
 // ---------------------------------------------------------------------------
 export { DefaultRequestLogger } from './logger/default-request-logger.js';
 export { NoopRequestLogger } from './logger/noop-request-logger.js';
+export { redactingSessionLogger } from './logger/redact-provider-output.js';
 export { SessionLogger } from './logger/session-logger.js';
 export {
   SessionRequestLogger,

@@ -32,6 +32,8 @@ export interface SapAiCoreFoundationConfig extends LLMProviderConfig {
 type Tools = Parameters<LLMProvider['chat']>[1];
 type RequestHeaders = Record<string, string>;
 type InferenceErrorWire = openai.OpenAIErrorResponse & { message?: string };
+type SamplingParameter = 'temperature' | 'top_p';
+type SamplingOptions = Partial<Record<SamplingParameter, number>>;
 
 interface DeploymentResource {
   scenarioId?: string;
@@ -61,6 +63,7 @@ interface ListedDeployment {
 interface Deployment extends ListedDeployment {
   configuration?: ConfigurationResource;
   configurationLookup?: Lookup<ConfigurationResource>;
+  unsupportedSampling?: Set<SamplingParameter>;
 }
 
 interface ConfigurationResource {
@@ -89,6 +92,17 @@ class StaleDeploymentError extends LlmError {
 
   constructor() {
     super('SAP AI Core foundation request failed (HTTP 404)');
+  }
+}
+
+class UnsupportedSamplingError extends LlmError {
+  readonly status = 400;
+
+  constructor(
+    readonly parameter: SamplingParameter,
+    message: string,
+  ) {
+    super(message);
   }
 }
 
@@ -173,7 +187,10 @@ function isContextOverflow(message?: string): boolean {
   );
 }
 
-async function inferenceError(response: Response): Promise<LlmError> {
+async function inferenceError(
+  response: Response,
+  sampling?: SamplingOptions,
+): Promise<LlmError> {
   if ([400, 413, 422].includes(response.status)) {
     const body = await response.text().catch(() => '');
     const wire = parseInferenceError(body);
@@ -191,8 +208,20 @@ async function inferenceError(response: Response): Promise<LlmError> {
         { status: response.status },
       );
     }
-    if (response.status !== 413)
-      return httpError(response.status, response.headers, detail);
+    if (response.status !== 413) {
+      const error = httpError(response.status, response.headers, detail);
+      // Both unsupported_parameter and unsupported_value identify the field
+      // in error.param. Deployments may omit the code.
+      const param = wire?.error?.param;
+      if (
+        response.status === 400 &&
+        (param === 'temperature' || param === 'top_p') &&
+        sampling?.[param] !== undefined
+      ) {
+        return new UnsupportedSamplingError(param, error.message);
+      }
+      return error;
+    }
   } else {
     await response.body?.cancel().catch(() => {});
   }
@@ -533,7 +562,8 @@ export class SapAiCoreFoundationProvider extends BaseLLMProvider<SapAiCoreFounda
     let body: string;
     let headers: RequestHeaders;
     let deployment: Deployment;
-    let refreshing = false;
+    let refreshed = false;
+    let samplingRetried = false;
 
     return {
       post: async () => {
@@ -559,15 +589,31 @@ export class SapAiCoreFoundationProvider extends BaseLLMProvider<SapAiCoreFounda
           await response.body?.cancel().catch(() => {});
           throw new StaleDeploymentError();
         }
-        if (!response.ok) throw await inferenceError(response);
+        if (!response.ok) {
+          throw await inferenceError(
+            response,
+            request.family === 'anthropic' ? undefined : request.body,
+          );
+        }
         return { response, family: request.family };
       },
       throttle: {
         model,
         signal,
         retryImmediately: (error: object | undefined) => {
-          refreshing = error instanceof StaleDeploymentError && !refreshing;
-          return refreshing;
+          if (error instanceof StaleDeploymentError && !refreshed) {
+            refreshed = true;
+            return true;
+          }
+          if (error instanceof UnsupportedSamplingError) {
+            deployment.unsupportedSampling ??= new Set();
+            deployment.unsupportedSampling.add(error.parameter);
+            if (!samplingRetried) {
+              samplingRetried = true;
+              return true;
+            }
+          }
+          return false;
         },
       },
       usage: {
@@ -588,6 +634,10 @@ export class SapAiCoreFoundationProvider extends BaseLLMProvider<SapAiCoreFounda
               options,
               configuration?.executableId,
             );
+          if (request.family !== 'anthropic') {
+            for (const param of deployment.unsupportedSampling ?? [])
+              delete request.body[param];
+          }
           body = JSON.stringify(request.body);
         },
         opts: options,

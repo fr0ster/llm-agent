@@ -52,6 +52,38 @@ test('default enabledAreas is "all" (backward-compat, 3-arg ctor)', () => {
   assert.equal(stepFiles(dir).length, 1);
 });
 
+test('redacts nested provider output and encrypted reasoning in raw Responses data', () => {
+  const log = new SessionLogger(dir, 'sid', 'tid');
+  const payload = {
+    messages: [
+      {
+        role: 'assistant',
+        content: 'visible',
+        providerOutput: 'private-history',
+      },
+    ],
+    raw: {
+      output: [
+        { type: 'reasoning', id: 'rs_1', encrypted_content: 'private-raw' },
+      ],
+    },
+  };
+  log.logStep('llm_response', payload, 'llm');
+
+  const session = path.join(dir, 'session_sid');
+  const request = path.join(session, fs.readdirSync(session)[0]);
+  const data = fs.readFileSync(
+    path.join(request, '01_llm_response.json'),
+    'utf8',
+  );
+  assert.deepEqual(JSON.parse(data), {
+    messages: [{ role: 'assistant', content: 'visible' }],
+    raw: { output: [{ type: 'reasoning', id: 'rs_1' }] },
+  });
+  assert.equal(payload.messages[0].providerOutput, 'private-history');
+  assert.equal(payload.raw.output[0].encrypted_content, 'private-raw');
+});
+
 /*
  * Path-traversal containment.
  *

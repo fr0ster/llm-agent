@@ -35,7 +35,7 @@ import {
 import { normalizeMaxIterations } from '../config/normalize-max-iterations.js';
 import type { ISpan, ITracer } from '../tracer/types.js';
 import { evaluateCondition } from './condition-evaluator.js';
-import type { PipelineContext } from './context.js';
+import { type PipelineContext, withRedactedPipelineLogger } from './context.js';
 import type { StageHandlerRegistry } from './handlers/index.js';
 import type { StageDefinition } from './types.js';
 
@@ -58,6 +58,7 @@ export class PipelineExecutor {
     ctx: PipelineContext,
     parentSpan: ISpan,
   ): Promise<boolean> {
+    ctx = withRedactedPipelineLogger(ctx);
     for (const stage of stages) {
       if (ctx.error) return false;
       if (ctx.options?.signal?.aborted) return false;

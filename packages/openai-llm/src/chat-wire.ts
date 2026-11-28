@@ -17,7 +17,7 @@ export interface OpenAIWireMessage {
 }
 
 export interface OpenAIErrorResponse {
-  error?: { message?: string; code?: string | null };
+  error?: { message?: string; code?: string | null; param?: string | null };
 }
 
 interface OpenAIUsage {
