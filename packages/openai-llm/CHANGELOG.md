@@ -1,5 +1,13 @@
 # @mcp-abap-adt/openai-llm
 
+## 30.16.1
+
+### Patch Changes
+
+- 5449953: Send caller-supplied Responses sampling options for all model names. SAP AI Core Foundation learns unsupported sampling parameters per deployment for Responses and Chat Completions and repeats the request once without the rejected parameter.
+  
+  Redact provider-owned output from session and controller diagnostics while preserving it in live LLM tool rounds.
+
 ## 30.16.0
 
 ### Minor Changes
