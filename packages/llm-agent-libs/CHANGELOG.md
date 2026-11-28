@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent-libs
 
+## 38.3.0
+
+### Minor Changes
+
+- bf75dbf: Add the optional `reasoningEffort` setting to LLM calls and model configuration. SAP AI Core OpenAI foundation deployments use the Responses API for requests with function tools and preserve encrypted reasoning across tool rounds. HTTP 400 and 422 inference errors include the provider explanation.
+
 ## 38.2.0
 
 ### Minor Changes
